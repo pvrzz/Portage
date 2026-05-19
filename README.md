@@ -5,7 +5,7 @@
 Bulk-migrate chrome extensions and cookies between chromium browsers. Opens chrome web store pages in labeled tab groups for extensions, and provides encrypted JSON export/import for cookies.
 
 ```
-github: https://github.com/pvrzz/browserport
+github: https://github.com/pvrzz/portage
 ```
 
 ## install (load unpacked)
