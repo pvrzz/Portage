@@ -74,9 +74,7 @@ portage/
 │  ├─ dashboard.{html,js}  # unified Export + Import engine (auto-detects browser)
 │  ├─ background.js
 │  └─ styles.css           # shared monochrome design system
-├─ make_icons.py           # regenerates the bidirectional icon set (needs Pillow)
-├─ LICENSE                 # MIT
-└─ .gitignore
+└─ LICENSE                 # MIT
 ```
 
 Everything except `manifest.json` and `icons/` is byte-identical in both folders — edit in `chrome/` and copy across. Bundle format: `{ portage:{ format:"portage-bundle", version:1, source, exportedAt, … }, meta:{ counts }, data:{ <category>: … } }`.
