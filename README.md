@@ -57,5 +57,3 @@ Passwords and autofill data are completely walled off from extension APIs. You w
 
 1. **Export:** Open Portage on your old browser, click **Scan**, uncheck anything you want to leave behind, and hit **Export bundle**. It drops the JSON (and the optional extension checklist) right to your downloads.
 2. **Import:** Open Portage on your new browser, drag and drop the `.portage.json` file, review the stats, and hit **Import selected**.
-
-## Layout
