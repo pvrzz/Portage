@@ -15,7 +15,7 @@
 
 ## Why
 
-Browsers intentionally make it harder to swap from their ecosystem, and often lack the proper support for other browsers built off of the same source (ex. Chromium, Firefox). Portage is a straightforward, open-source tool that reads what it's allowed to read, dumps it into a human-readable `*.portage.json` file, and rebuilds it on the other side. Because the export is just plain JSON, it bridges the gap between competing browsers or lets you easily migrate to a new machine. 
+Browsers intentionally make it harder to swap from their ecosystem, and often lack the proper support for third-party browsers built off of the same source (ex. Chromium, Firefox). Portage is a straightforward, open-source tool that reads what it's allowed to read, dumps it into a human-readable `*.portage.json` file, and rebuilds it on the other side. Because the export is just plain JSON, it bridges the gap between competing browsers or lets you easily migrate to a new machine. 
 
 ## What transfers
 
