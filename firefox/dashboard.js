@@ -77,7 +77,10 @@ function toast(msg, icon) {
   const wrap = document.getElementById("toasts");
   const el = document.createElement("div");
   el.className = "toast";
-  el.innerHTML = iconSvg(SVG[icon] || SVG.check) + `<span>${msg}</span>`;
+  el.innerHTML = iconSvg(SVG[icon] || SVG.check);
+  const span = document.createElement("span");
+  span.textContent = msg;
+  el.appendChild(span);
   wrap.appendChild(el);
   setTimeout(() => { el.style.transition = "opacity .3s, transform .3s"; el.style.opacity = "0"; el.style.transform = "translateX(20px)"; }, 3400);
   setTimeout(() => el.remove(), 3800);
