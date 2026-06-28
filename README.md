@@ -43,6 +43,9 @@ Passwords and autofill data are completely walled off from extension APIs. You w
 * **Handle with care:** Your export bundle contains live session cookies. Treat this file exactly like an exported password vault. Keep it local, import it, and delete it immediately.
 * **No deduplication:** Importing the exact same file twice will duplicate your history and cookies. Just run it once and verify.
 
+## Install (Packed)
+Check the releases tab of the repo, or go to the website for Portage at: https://portage.pvrz.lol/ for the latest Firefox and Chrome package.
+
 ## Install (Unpacked)
 
 ### Chrome
