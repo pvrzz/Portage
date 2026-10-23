@@ -21,13 +21,45 @@ const {encode,decode}=require('../tools/indexeddb_codec.js');
     else if(entry instanceof Map||entry instanceof Set)assert.deepEqual([...restored],[...entry]);
     else assert.deepEqual(JSON.parse(JSON.stringify(restored)),JSON.parse(JSON.stringify(entry)));
   }
+  // Structured-cloneable built-ins that are not plain objects.
+  const error=new TypeError('boom');error.cause={code:'E_TEST'};
+  const errorRestored=decode(JSON.parse(JSON.stringify(await encode(error))));
+  assert(errorRestored instanceof TypeError);
+  assert.equal(errorRestored.message,'boom');
+  assert.equal(errorRestored.name,'TypeError');
+  assert.deepEqual(errorRestored.cause,{code:'E_TEST'});
+  assert(decode(JSON.parse(JSON.stringify(await encode(Object(42))))) instanceof Number);
+  assert.equal(decode(JSON.parse(JSON.stringify(await encode(Object('x'))))).valueOf(),'x');
+  assert.equal(decode(JSON.parse(JSON.stringify(await encode(Object(false))))).valueOf(),false);
+
+  // Typed arrays carry the source byte order; decoding the same big-endian
+  // payload on a little-endian host must still produce the original values.
+  const bigEndianTypedArray={t:'typedarray',type:'Uint16Array',le:false,
+    v:Buffer.from([0,1,1,2]).toString('base64')};
+  assert.deepEqual(Array.from(decode(bigEndianTypedArray)),[1,258]);
+
+  if(typeof Float16Array!=='undefined'){
+    const floats=new Float16Array([1.5,-2]);
+    const restored=decode(JSON.parse(JSON.stringify(await encode(floats))));
+    assert(restored instanceof Float16Array);
+    assert.deepEqual(Array.from(restored),Array.from(floats));
+  }
+
   const cycle={};cycle.self=cycle;
   await assert.rejects(()=>encode(cycle),/cyclic/);
   const shared={shared:true};
   await assert.rejects(()=>encode([shared,shared]),/Shared\/cyclic/);
-  // Binary values are rejected before Array.from() expands them.
+  // Binary values are rejected before expansion; an 8 MiB value is allowed
+  // and base64 keeps its encoded form inside the 32 MiB database budget.
   await assert.rejects(()=>encode(new ArrayBuffer(9*1024*1024)),/8 MiB/);
   await assert.rejects(()=>encode(new Uint8Array(9*1024*1024)),/8 MiB/);
+  const eightMiB=new Uint8Array(8*1024*1024);eightMiB[0]=255;eightMiB[eightMiB.length-1]=7;
+  const eightEncoded=await encode(eightMiB);
+  assert(JSON.stringify(eightEncoded).length<32*1024*1024);
+  const eightRestored=decode(JSON.parse(JSON.stringify(eightEncoded)));
+  assert.equal(eightRestored.byteLength,8*1024*1024);
+  assert.equal(eightRestored[0],255);
+  assert.equal(eightRestored[eightRestored.length-1],7);
   const special=Object.create(null);Object.defineProperty(special,'__proto__',{value:{safe:1},enumerable:true});
   const recovered=decode(JSON.parse(JSON.stringify(await encode(special))));
   assert.equal(Object.getPrototypeOf(recovered),null);

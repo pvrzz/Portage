@@ -93,11 +93,15 @@ markers are dropped, and a profile containing other symlinks is refused (copy
 it to a regular directory first). Source/destination paths that contain each
 other are also refused. Chromium's destination profile **will be changed**
 with `--apply`. Existing IndexedDB databases are **never overwritten**: the
-whole database is skipped if its name already exists at that origin. The
-destination Chromium lock file and the Firefox source profile's open lock are
-checked before migration; the Chromium profile named `Default` is used unless
-`--chromium-profile-directory` is passed. Do not use this on a profile that
-another browser process is accessing.
+whole database is skipped if its name already exists at that origin. Schema and
+records are written in the same version-change transaction, so an interrupted
+restore cannot leave a schema-only database that a later run would skip; an
+aborted database is reported and can be retried after fixing the cause. A
+clean rerun reports intentional existing-database skips but exits successfully.
+The destination Chromium lock file and the Firefox source profile's open lock
+are checked before migration; the Chromium profile named `Default` is used
+unless `--chromium-profile-directory` is passed. Do not use this on a profile
+that another browser process is accessing.
 
 ```bash
 # First, preview first-party IndexedDB origin count, WITHOUT modifying a profile:
@@ -125,16 +129,21 @@ copies the whole Firefox profile, so treat it as sensitive.
 
 **Migrated**: IndexedDB database names and versions, object stores, key paths,
 auto-increment flags, indexes (including multi-entry/unique), primary keys, and
-supported stored values (ordinary objects/arrays, strings/numbers/booleans,
-BigInt, Date, RegExp, Map/Set, binary buffers and typed arrays, Blob/File).
+supported stored values: ordinary objects/arrays, strings/numbers/booleans,
+BigInt, Date, RegExp, Map/Set, binary buffers, typed arrays (including
+`Float16Array` where the browsers support it; multi-byte elements carry a byte
+order marker so cross-endian migrations do not byte-swap values), Blob/File,
+`Error` subclasses (name/message/stack/cause), `Number`/`String`/`Boolean`
+wrapper objects, and `ImageData`.
 
-**Still unsupported**: cyclic or shared object references, CryptoKey,
-non-standard browser objects, IndexedDB databases larger than 32 MiB in the
-encoded wire representation, stores with over 50,000 records, arrays with over
-50,000 elements, and individual Blob/File/ArrayBuffer/typed-array values larger
-than 8 MiB (checked before they are expanded). The bridge
-**skips entire databases** when it finds unsupported data, and reports
-aggregate counts without printing record values.
+**Still unsupported**: cyclic or shared object references, CryptoKey, other
+platform/browser objects, databases larger than 32 MiB in the encoded wire
+representation, an origin whose encoded payload exceeds 64 MiB, stores with
+over 50,000 records, arrays with over 50,000 elements, individual
+Blob/File/ArrayBuffer/typed-array/ImageData values larger than 8 MiB (checked
+before they are expanded), and a per-origin snapshot/restore that takes longer
+than 120 seconds. The bridge **skips entire databases** when it finds
+unsupported data, and reports aggregate counts without printing record values.
 The IndexedDB API does not expose an object store's current auto-increment
 counter, so after restoring records that were deleted at the source a new
 record can reuse a deleted key number; verify apps that require monotonically

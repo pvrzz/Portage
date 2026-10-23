@@ -35,11 +35,14 @@ async function main(){
         const db=r.result;
         await new Promise((resolve,reject)=>{
           const tx=db.transaction(['keyed','auto'],'readwrite');
+          const error=new TypeError('boom');error.cause={code:'E_TEST'};
           const obj={id:number+1,name:'site-'+number,when:new Date('2020-02-03T04:05:06Z'),
             bytes:new Uint8Array([1,2,3,255]),big:12345678901234567890n,
             blob:new Blob(['file-contents'],{type:'text/plain'}),
             map:new Map([['hello','猫']]),set:new Set(['a','b']),
-            maybe:undefined,negativeZero:-0};
+            maybe:undefined,negativeZero:-0,
+            f16:new Float16Array([1.5,-2]),error,numObject:Object(7),
+            image:new ImageData(new Uint8ClampedArray([1,2,3,255]),1,1)};
           tx.objectStore('keyed').put(obj);
           tx.objectStore('auto').put({tag:['alpha','beta'],value:'origin-'+number});
           tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);
@@ -71,13 +74,20 @@ async function main(){
           name:obj.name,id:obj.id,when:obj.when.toISOString(),bytes:Array.from(obj.bytes),
           big:String(obj.big),blob:await obj.blob.text(),map:obj.map.get('hello'),set:Array.from(obj.set),
           undefinedValue:obj.maybe===undefined,negativeZero:Object.is(obj.negativeZero,-0),
+          f16:Array.from(obj.f16),error:obj.error instanceof TypeError?obj.error.message:'wrong type',
+          errorCause:obj.error.cause?.code,
+          numberObject:obj.numObject instanceof Number?obj.numObject.valueOf():'wrong type',
+          image:[obj.image.width,obj.image.height,Array.from(obj.image.data)],
           byName:byName.name,byTag:byTag.value,autoValue:au.value};
         db.close();return results;
       });
       assert.deepEqual(result,{version:7,storeCount:2,name:'site-'+n,id:n+1,
         when:'2020-02-03T04:05:06.000Z',bytes:[1,2,3,255],
         big:'12345678901234567890',blob:'file-contents',map:'猫',set:['a','b'],
-        undefinedValue:true,negativeZero:true,byName:'site-'+n,byTag:'origin-'+n,autoValue:'origin-'+n});
+        undefinedValue:true,negativeZero:true,
+        f16:[1.5,-2],error:'boom',errorCause:'E_TEST',numberObject:7,
+        image:[1,1,[1,2,3,255]],
+        byName:'site-'+n,byTag:'origin-'+n,autoValue:'origin-'+n});
       // Invalid structured clone payload must not create a partially valid DB.
       const rejected=await restoreOrigin(verify,{databases:[{
         name:'portage-unsupported-test',version:1,stores:[{
@@ -89,12 +99,26 @@ async function main(){
       assert.equal(rejected.skipped,1);
       const after=await verify.evaluate(()=>indexedDB.databases());
       assert(!after.some(x=>x.name==='portage-unsupported-test'), 'Rejected DB should not exist');
+      // A record that throws while writing inside the upgrade transaction must
+      // abort the whole database, not leave a schema-only DB for later runs.
+      const invalidRecord=await restoreOrigin(verify,{databases:[{
+        name:'portage-invalid-record-test',version:1,stores:[{
+          name:'keyed',keyPath:'id',autoIncrement:false,indexes:[],
+          records:[[{t:'number',v:1},{t:'object',plain:true,v:[]}]]
+        }]
+      }]});
+      assert.equal(invalidRecord.restored,0,JSON.stringify(invalidRecord));
+      assert.equal(invalidRecord.skipped,1);
+      const afterInvalid=await verify.evaluate(()=>indexedDB.databases());
+      assert(!afterInvalid.some(x=>x.name==='portage-invalid-record-test'),
+        'Aborted restore must not leave a schema-only database');
     }
     await verify.close();await browser.close();browser=null;
     assert.deepEqual(hits,before,'No real site traffic including verification');
     // Re-running must never overwrite existing destination IndexedDB databases.
     const repeated=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:FIREFOX,chromium:CHROMIUM,apply:true,timeout:20000});
     assert.equal(repeated.restored,0);assert.equal(repeated.skipped,2);
+    assert.deepEqual(repeated.errors,[],'existing-DB skips are not failures');
     process.exitCode=undefined;
     console.log('PASS: Firefox 159 -> Chrome 156 indexedDB: 2 origins, schema, indexes, rich values, no target-site traffic');
   }finally{

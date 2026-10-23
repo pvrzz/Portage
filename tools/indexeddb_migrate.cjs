@@ -56,6 +56,16 @@ async function navigateOffline(page,origin,timeout) {
   await page.addScriptTag({path:path.join(__dirname,'indexeddb_codec.js')});
 }
 
+function withTimeout(promise, timeoutMs, label) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Error(label+' timed out after '+Math.round(timeoutMs/1000)+'s')),timeoutMs);
+    }),
+  ]).finally(()=>clearTimeout(timer));
+}
+
 async function snapshotOrigin(page) {
   return page.evaluate(async () => {
     const {encode}=globalThis.PortageIDBCodec;
@@ -118,9 +128,10 @@ async function restoreOrigin(page,source) {
     const results={restored:0,skipped:0,errors:[]};
     const existing=new Set((await indexedDB.databases()).map(x=>x.name));
     for(const spec of source.databases) {
-      if(existing.has(spec.name)) {results.skipped++;results.errors.push('Existing destination database preserved');continue;}
+      if(existing.has(spec.name)) {results.skipped++;continue;}
       let db;
       let created=false;
+      let failure=null;
       try {
         // Decode EVERYTHING before creating the DB; unsupported values must not
         // leave a partially initialized destination schema.
@@ -137,25 +148,22 @@ async function restoreOrigin(page,source) {
                 if(s.keyPath!==null)opts.keyPath=s.keyPath;
                 const store=d.createObjectStore(s.name,opts);
                 for(const ix of s.indexes)store.createIndex(ix.name,ix.keyPath,{unique:ix.unique,multiEntry:ix.multiEntry});
+                // Write schema and records in the same versionchange
+                // transaction so an interrupted restore cannot leave a
+                // schema-only database that later runs skip forever.
+                for(const [key,value] of s.records){
+                  if(s.keyPath===null)store.put(value,key);else store.put(value);
+                }
               }
-            }catch(e){request.transaction.abort();}
+            }catch(e){
+              failure=e;
+              try{request.transaction.abort();}catch{}
+            }
           };
           request.onsuccess=()=>resolve(request.result);
-          request.onerror=()=>reject(request.error||Error('Open error'));
+          request.onerror=()=>reject(failure||request.error||Error('Open error'));
           request.onblocked=()=>reject(Error('IndexedDB upgrade blocked'));
         });
-        for(const s of decoded){
-          if(!s.records.length)continue;
-          await new Promise((resolve,reject)=>{
-            const tx=db.transaction(s.name,'readwrite');
-            tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error||Error('Write failed'));
-            tx.onabort=()=>reject(tx.error||Error('Transaction aborted'));
-            const store=tx.objectStore(s.name);
-            try{for(const [key,value] of s.records) {
-              if(s.keyPath===null)store.put(value,key);else store.put(value);
-            }}catch(e){tx.abort();reject(e);}
-          });
-        }
         results.restored++;
       }catch(e){
         results.skipped++;
@@ -245,14 +253,14 @@ async function migrate(opts) {
     for(const [i,origin]of origins.entries()){
       try {
         await navigateOffline(sourcePage,origin,opts.timeout);
-        const exported=await snapshotOrigin(sourcePage);
+        const exported=await withTimeout(snapshotOrigin(sourcePage),120000,'IndexedDB snapshot');
         if(exported.errors.length){stats.sourceSkipped+=exported.errors.length;stats.errors.push({originIndex:i+1,reason:'Unsupported source database/record type'});}
         if(!exported.databases.length)continue;
         await navigateOffline(destPage,origin,opts.timeout);
-        const result=await restoreOrigin(destPage,exported);
+        const result=await withTimeout(restoreOrigin(destPage,exported),120000,'IndexedDB restore');
         stats.restored+=result.restored;stats.skipped+=result.skipped;
         if(result.errors.length)stats.errors.push({originIndex:i+1,reason:'Target database skipped or unsupported'});
-      }catch(e){stats.skipped++;stats.errors.push({originIndex:i+1,reason:String(e.message||e).slice(0,150)});}
+      }catch(e){stats.skipped++;stats.errors.push({originIndex:i+1,reason:String(e.message||e).slice(0,150)});if(String(e.message||'').includes('timed out'))throw e;}
     }
     await sourcePage.close();await destPage.close();
   }finally {
@@ -267,7 +275,9 @@ async function migrate(opts) {
   }
   console.log(`IndexedDB migration: ${stats.restored} database(s) restored; ${stats.skipped} target skips; ${stats.sourceSkipped} source skips.`);
   if(stats.errors.length)console.log('Failures (origin indices only, no contents):',JSON.stringify(stats.errors));
-  if(stats.skipped||stats.sourceSkipped)process.exitCode=2;
+  // Existing destination databases are intentionally skipped, so only real
+  // source/restore errors make the command exit non-zero.
+  if(stats.sourceSkipped||stats.errors.length)process.exitCode=2;
   return stats;
 }
 if(require.main===module){
