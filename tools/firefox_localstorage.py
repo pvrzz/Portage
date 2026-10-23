@@ -117,7 +117,7 @@ def export_profile(profile: Path):
             with closing(sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, timeout=3)) as conn:
                 row = conn.execute('SELECT origin FROM "database" LIMIT 1').fetchone()
                 if not row or not valid_origin(row[0]):
-                    warnings.append(f'Skipped partitioned or invalid origin: {db.parent.parent.name}')
+                    warnings.append('Skipped partitioned or invalid origin (name omitted for privacy)')
                     continue
                 origin = row[0].rstrip('/')
                 entries = conn.execute('SELECT key, value, conversion_type, compression_type FROM data').fetchall()
@@ -130,7 +130,7 @@ def export_profile(profile: Path):
                     items[key] = decode_value(value, conversion, compression)
                 sites.append({'origin': origin, 'items': items})
         except (sqlite3.Error, ValueError, TypeError, UnicodeError, OSError) as exc:
-            warnings.append(f'Skipped {db.parent.parent.name}: {exc}')
+            warnings.append(f'Skipped unreadable/unsupported origin (details omitted): {type(exc).__name__}')
     return sites, warnings
 
 

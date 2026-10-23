@@ -127,3 +127,27 @@ For an actual two-origin cross-browser IndexedDB test with disposable profiles:
 node tests/test_indexeddb_codec.cjs
 node tests/e2e_indexeddb.cjs
 ```
+
+## Offline cookie migration (experimental)
+
+The `chromium_cookie_import.cjs` companion can transfer Firefox cookies into a
+closed Chromium/Brave profile without creating a plaintext cookie bundle on
+disk. Python reads the backed-up Firefox `cookies.sqlite` and passes the
+records through a **local subprocess pipe** to Chrome's native cookie API.
+Only aggregate counts are printed. The entire profile should be backed up.
+
+```bash
+node tools/chromium_cookie_import.cjs \
+  "$HOME/.mozilla/firefox/dev-edition-default" \
+  "$HOME/.config/BraveSoftware/Brave-Browser" \
+  /usr/bin/brave-browser
+```
+
+Firefox containers, origin-attribute partitions and expired cookies are
+conservatively excluded, rather than incorrectly combining isolated sessions.
+Some cookies or logins remain tied to browser/device-bound secrets; a successful
+CDP `Network.setCookie` result does **not** guarantee continued authentication.
+Never collect or paste exported cookie values into bug reports.
+
+`node tests/e2e_cookie_cli.cjs` verifies this transfer with synthetic cookie
+values and disposable Brave profiles only.
