@@ -58,3 +58,73 @@ node tests/e2e_chrome.cjs
 ```
 
 Chromium E2E tests verify that **requests to the synthetic target origin equal zero during import**, and the stored values remain readable after browser restart. The cross-browser test verifies Firefox LSNG decoding, AES encryption compatibility and Chromium restoration. Neither test guarantees the preservation of real-world login sessions.
+
+## IndexedDB migration (experimental, Firefox → Chrome/Brave)
+
+Unlike localStorage, IndexedDB stores browser-specific Structured Clone values
+and may keep binary data in separate `.files` directories. **Do not copy its
+SQLite files directly to Chromium.** This optional bridge launches a temporary
+**copy** of your closed Firefox profile in Firefox 159+ using WebDriver BiDi,
+reads each first-party origin's IndexedDB through Firefox's real IndexedDB API,
+then restores databases through Chromium's native IndexedDB API.
+
+During migration both browsers receive only **inert, locally intercepted HTML**
+for each site. In the automated tests the source sites received zero HTTP
+requests during transfer. This is *not* a guarantee of zero browser background
+network activity. The transfer stays in memory; it does **not** export tokens
+into an unencrypted intermediate JSON file. A temporary Firefox profile copy
+containing sensitive data is created under a mode-0700 temporary directory and
+removed when the tool exits normally. A crash or power failure can leave it
+behind, so inspect `portage-idb-*` in your temporary directory if interrupted.
+
+**Close both browsers and back up both profiles before beginning.** Firefox's
+source is not modified, but Chromium's destination profile **will be changed**
+with `--apply`. Existing IndexedDB databases are **never overwritten**: the
+whole database is skipped if its name already exists at that origin. Normal
+browser lock files are checked on the destination. Do not use this on a profile
+that another browser process is accessing.
+
+```bash
+# First, preview first-party IndexedDB origin count, WITHOUT modifying a profile:
+node tools/indexeddb_migrate.cjs \
+  --firefox-profile "$HOME/.mozilla/firefox/your-profile" \
+  --chromium-profile "$HOME/.config/BraveSoftware/Brave-Browser" \
+  --firefox /usr/local/bin/firefox \
+  --chromium /usr/bin/brave-browser
+
+# After backing up both profiles, repeat with --apply:
+node tools/indexeddb_migrate.cjs \
+  --firefox-profile "$HOME/.mozilla/firefox/your-profile" \
+  --chromium-profile "$HOME/.config/BraveSoftware/Brave-Browser" \
+  --firefox /usr/local/bin/firefox \
+  --chromium /usr/bin/brave-browser --apply
+```
+
+This companion uses the same `tools/node_modules/puppeteer-core` dependency as
+the other CLI; run `npm ci --prefix tools` first. Firefox must support WebDriver
+BiDi; validated with Firefox 159.0b5 and Google Chrome 156.0.8078.47, not yet
+with Brave Stable. Origin enumeration reads the QuotaManager `storage.sqlite`
+metadata; only HTTP(S) origins without Firefox container/partition attributes
+are considered. It does not inspect Chrome or Firefox passwords/cookies.
+
+**Migrated**: IndexedDB database names and versions, object stores, key paths,
+auto-increment flags, indexes (including multi-entry/unique), primary keys, and
+supported stored values (ordinary objects/arrays, strings/numbers/booleans,
+BigInt, Date, RegExp, Map/Set, binary buffers and typed arrays, Blob/File).
+
+**Still unsupported**: cyclic or shared object references, CryptoKey,
+non-standard browser objects, IndexedDB databases larger than 32 MiB in the
+wire representation, stores with over 50,000 records, and individual Blob/File
+values larger than 8 MiB. The bridge **skips entire databases** when it finds
+unsupported data, and reports aggregate counts without printing record values.
+There is no guarantee that every session will remain logged in; site-specific
+security mechanisms and passkeys can require reauthentication. Importing an IDB
+database into another browser also does not make Firefox extension storage or
+browser-specific JavaScript APIs compatible.
+
+For an actual two-origin cross-browser IndexedDB test with disposable profiles:
+
+```bash
+node tests/test_indexeddb_codec.cjs
+node tests/e2e_indexeddb.cjs
+```

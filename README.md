@@ -67,3 +67,7 @@ Check the releases tab of the repo, or go to the website for Portage at: https:/
 ## Experimental: whole-profile Firefox LocalStorage transfer (Linux)
 
 Optional Python + Node helpers can migrate **all compatible first-party origins**, not just open tabs, to a closed Chrome/Brave profile. Export is encrypted by default; import uses intercepted inert responses rather than contacting websites. See the [step-by-step CLI and privacy limitations](tools/README.md). This does **not** include IndexedDB or guarantee login-session preservation.
+
+### Experimental IndexedDB migration
+
+The Linux companion now also supports **first-party IndexedDB** for Firefox → Chromium. It recreates database schemas, indexes, keys and supported Structured Clone data using Firefox/Chromium browser APIs, without loading live sites. Existing target IndexedDB databases are skipped to prevent accidental overwrites. **Back up both profiles before using `--apply`.** See [tools/README.md](tools/README.md#indexeddb-migration-experimental-firefox--chromebrave) for instructions, compatibility limits and tests.
