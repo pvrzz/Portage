@@ -9,7 +9,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const cp = require('node:child_process');
-const {encode,decode} = require('./indexeddb_codec.js');
 const {validOrigin} = require('./chromium_localstorage_import.cjs');
 
 function options(argv) {
@@ -37,6 +36,8 @@ function originsForFirefox(profile) {
 
 async function inertPage(browser, kind) {
   const page=await browser.newPage();
+  // Do not let a source page escape into another origin or create popups.
+  page.on('popup', popup => popup.close().catch(() => {}));
   if(kind==='chromium') {await page.setBypassServiceWorker(true);await page.setCacheEnabled(false);}
   await page.setRequestInterception(true);
   page.on('request',request => {
@@ -49,11 +50,13 @@ async function inertPage(browser, kind) {
 async function navigateOffline(page,origin,timeout) {
   await page.goto(origin+'/',{waitUntil:'domcontentloaded',timeout});
   if(new URL(page.url()).origin!==origin)throw Error('Navigation crossed origin');
+  // Load trusted codec from the local repository, no eval or remote scripts.
+  await page.addScriptTag({path:path.join(__dirname,'indexeddb_codec.js')});
 }
 
 async function snapshotOrigin(page) {
-  return page.evaluate(async (source) => {
-    const encode=(0,eval)('('+source+')'); // trusted, embedded function source; never user input
+  return page.evaluate(async () => {
+    const {encode}=globalThis.PortageIDBCodec;
     const output={databases:[],errors:[]};
     const metas=await indexedDB.databases();
     for(const meta of metas) {
@@ -74,13 +77,14 @@ async function snapshotOrigin(page) {
             indexes:Array.from(store.indexNames,n=>{
               const ix=store.index(n);return {name:ix.name,keyPath:ix.keyPath,unique:ix.unique,multiEntry:ix.multiEntry};
             }),records:[]};
+          // Cap retrieval at 50,001 entries; never materialize unbounded stores.
           const values=await new Promise((resolve,reject)=>{
-            const req=store.getAll();req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+            const req=store.getAll(undefined,50001);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
           });
           // Key retrieval is a second transaction to avoid inactive transactions after await.
           const tx2=db.transaction(storeName,'readonly');
           const keys=await new Promise((resolve,reject)=>{
-            const req=tx2.objectStore(storeName).getAllKeys();req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
+            const req=tx2.objectStore(storeName).getAllKeys(undefined,50001);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
           });
           if(keys.length!==values.length)throw Error('Key/value length mismatch');
           if(values.length>50000)throw Error('Store has over 50000 records (migration safety limit)');
@@ -94,17 +98,18 @@ async function snapshotOrigin(page) {
       finally {db?.close();}
     }
     return output;
-  },encode.toString());
+  });
 }
 
 async function restoreOrigin(page,source) {
-  return page.evaluate(async ({source,codec})=>{
-    const decode=(0,eval)('('+codec+')');
+  return page.evaluate(async ({source})=>{
+    const {decode}=globalThis.PortageIDBCodec;
     const results={restored:0,skipped:0,errors:[]};
     const existing=new Set((await indexedDB.databases()).map(x=>x.name));
     for(const spec of source.databases) {
       if(existing.has(spec.name)) {results.skipped++;results.errors.push('Existing destination database preserved');continue;}
       let db;
+      let created=false;
       try {
         // Decode EVERYTHING before creating the DB; unsupported values must not
         // leave a partially initialized destination schema.
@@ -113,6 +118,7 @@ async function restoreOrigin(page,source) {
         db=await new Promise((resolve,reject)=>{
           const request=indexedDB.open(spec.name,spec.version);
           request.onupgradeneeded=()=>{
+            created=true;
             try{
               const d=request.result;
               for(const s of decoded){
@@ -143,13 +149,20 @@ async function restoreOrigin(page,source) {
       }catch(e){
         results.skipped++;
         results.errors.push(String(e.message||e).slice(0,160));
-        // Newly created DB may now contain a partial subset of stores; remove it.
+        // Only remove a database created by THIS migration attempt. Never
+        // delete a target database when validation failed before creation.
         if(db){db.close();db=null;}
-        try{await new Promise((resolve,reject)=>{const q=indexedDB.deleteDatabase(spec.name);q.onsuccess=()=>resolve();q.onerror=()=>reject(q.error);q.onblocked=()=>reject(Error('DB deletion blocked'));});}catch{}
+        if(created){
+          try{await new Promise((resolve,reject)=>{
+            const q=indexedDB.deleteDatabase(spec.name);
+            q.onsuccess=()=>resolve();q.onerror=()=>reject(q.error);
+            q.onblocked=()=>reject(Error('DB deletion blocked'));
+          });}catch{results.errors.push('Partial database cleanup failed; inspect target profile');}
+        }
       }finally {db?.close();}
     }
     return results;
-  },{source,codec:decode.toString()});
+  },{source});
 }
 
 async function migrate(opts) {
@@ -160,6 +173,13 @@ async function migrate(opts) {
   console.log(`Firefox IndexedDB inventory: ${origins.length} first-party origin(s); container/partitioned origins intentionally excluded.`);
   if(!opts.apply){console.log('DRY RUN: No browser started. Add --apply to migrate to a backed-up target profile.');return {origins:origins.length};}
   if(fs.existsSync(path.join(target,'SingletonLock')))throw Error('Target Chromium profile appears to be open');
+  // On Linux the .parentlock file may exist after Firefox exits, so test
+  // whether any process actually has the file open rather than its existence.
+  const sourceLock=path.join(fx,'.parentlock');
+  if(fs.existsSync(sourceLock)) {
+    const locked=cp.spawnSync('fuser',['-s',sourceLock],{timeout:3000,stdio:'ignore'});
+    if(locked.status===0)throw Error('Firefox source profile is running; close Firefox before migration');
+  }
   for(const exe of [opts.firefox,opts.chromium])if(!fs.existsSync(exe))throw Error('Executable not found: '+exe);
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'portage-idb-'));
   fs.chmodSync(scratch,0o700);
@@ -171,7 +191,14 @@ async function migrate(opts) {
     cp.execFileSync('cp',['-a','--reflink=auto',fx,clone],{timeout:120000});
     const pp=require('puppeteer-core');
     fb=await pp.launch({browser:'firefox',protocol:'webDriverBiDi',executablePath:opts.firefox,
-      userDataDir:clone,headless:true,timeout:20000});
+      userDataDir:clone,headless:true,timeout:20000,
+      extraPrefsFirefox:{
+        'browser.startup.page':0,
+        'browser.startup.homepage':'about:blank',
+        'browser.sessionstore.resume_from_crash':false,
+        'dom.serviceWorkers.enabled':false,
+        'extensions.enabledScopes':0,
+      }});
     cb=await pp.launch({browser:'chrome',executablePath:opts.chromium,
       userDataDir:target,headless:true,timeout:20000,
       args:['--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-sync','--disable-extensions']});
@@ -190,7 +217,10 @@ async function migrate(opts) {
     }
     await sourcePage.close();await destPage.close();
   }finally {
-    if(fb)await fb.close();if(cb)await cb.close();
+    // Finally must always attempt to dispose of the sensitive source clone,
+    // even if either browser fails to shut down cleanly.
+    try {if(fb)await fb.close();} catch(e) {console.warn('Firefox close failed:',e.message);}
+    try {if(cb)await cb.close();} catch(e) {console.warn('Chromium close failed:',e.message);}
     fs.rmSync(scratch,{recursive:true,force:true});
   }
   console.log(`IndexedDB migration: ${stats.restored} database(s) restored; ${stats.skipped} target skips; ${stats.sourceSkipped} source skips.`);

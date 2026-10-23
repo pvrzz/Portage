@@ -25,9 +25,16 @@ async function encode(value, seen = new WeakSet()) {
     return {t:'blob',v,mime:value.type};
   }
   if(Array.isArray(value)) {
+    if(value.length>50000)throw new Error('Array exceeds migration length limit');
     const items=[];
     for(let i=0;i<value.length;i++) items.push(Object.prototype.hasOwnProperty.call(value,i)?await encode(value[i],seen):{t:'hole'});
-    return {t:'array',v:items};
+    // Preserve custom enumerable properties, not only numeric array elements.
+    const extras=[];
+    for(const k of Object.keys(value)) {
+      if(/^(0|[1-9][0-9]*)$/.test(k) && Number(k)<value.length)continue;
+      extras.push([k,await encode(value[k],seen)]);
+    }
+    return {t:'array',v:items,extras};
   }
   if(value instanceof Map) {
     const pairs=[];for(const [k,v] of value) pairs.push([await encode(k,seen),await encode(v,seen)]);
@@ -40,7 +47,7 @@ async function encode(value, seen = new WeakSet()) {
     throw new Error('Unsupported IndexedDB object prototype');
   const pairs=[];
   for (const k of Object.keys(value)) pairs.push([k,await encode(value[k],seen)]);
-  return {t:'object',v:pairs};
+  return {t:'object',plain:Object.getPrototypeOf(value)===Object.prototype,v:pairs};
 }
 function decode(o){
   if(!o || typeof o.t!=='string')throw new Error('Invalid encoded value');
@@ -65,16 +72,19 @@ function decode(o){
     case 'array': {
       const arr=new Array(o.v.length);
       for(let i=0;i<o.v.length;i++)if(o.v[i].t!=='hole')arr[i]=decode(o.v[i]);
+      for(const [k,v]of (o.extras||[]))Object.defineProperty(arr,k,{value:decode(v),enumerable:true,writable:true,configurable:true});
       return arr;
     }
     case 'map':return new Map(o.v.map(([k,v])=>[decode(k),decode(v)]));
     case 'set':return new Set(o.v.map(decode));
     case 'object': {
-      const obj=Object.create(null);
+      const obj=o.plain===false?Object.create(null):{};
       for(const [k,v]of o.v)Object.defineProperty(obj,k,{value:decode(v),enumerable:true,writable:true,configurable:true});
       return obj;
     }
     default:throw new Error('Unknown structured clone value: '+o.t);
   }
 }
-module.exports={encode,decode};
+// CommonJS for unit tests; browser global for the inert migration document.
+if(typeof module !== 'undefined' && module.exports)module.exports={encode,decode};
+else Object.defineProperty(globalThis,'PortageIDBCodec',{value:Object.freeze({encode,decode}),writable:false,configurable:false});

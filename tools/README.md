@@ -29,7 +29,7 @@ The Portage extension cannot enumerate every origin's LocalStorage via WebExtens
 2. Install the *optional* importer dependency, once:
 
    ```bash
-   cd tools && npm install && cd ..
+   cd tools && npm ci && cd ..
    ```
 
 3. Close Brave. Check data counts in **dry-run** mode (the default):
@@ -80,8 +80,7 @@ behind, so inspect `portage-idb-*` in your temporary directory if interrupted.
 **Close both browsers and back up both profiles before beginning.** Firefox's
 source is not modified, but Chromium's destination profile **will be changed**
 with `--apply`. Existing IndexedDB databases are **never overwritten**: the
-whole database is skipped if its name already exists at that origin. Normal
-browser lock files are checked on the destination. Do not use this on a profile
+whole database is skipped if its name already exists at that origin. The destination Chromium lock file and the Firefox source profile's live lock are checked before migration. Do not use this on a profile
 that another browser process is accessing.
 
 ```bash
@@ -102,8 +101,8 @@ node tools/indexeddb_migrate.cjs \
 
 This companion uses the same `tools/node_modules/puppeteer-core` dependency as
 the other CLI; run `npm ci --prefix tools` first. Firefox must support WebDriver
-BiDi; validated with Firefox 159.0b5 and Google Chrome 156.0.8078.47, not yet
-with Brave Stable. Origin enumeration reads the QuotaManager `storage.sqlite`
+BiDi; validated with Firefox 159.0b5, Google Chrome 156.0.8078.47, and
+**Brave Stable 1.98.60** in disposable test profiles. Origin enumeration reads the QuotaManager `storage.sqlite`
 metadata; only HTTP(S) origins without Firefox container/partition attributes
 are considered. It does not inspect Chrome or Firefox passwords/cookies.
 

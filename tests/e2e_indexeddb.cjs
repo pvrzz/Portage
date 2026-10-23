@@ -1,11 +1,12 @@
 'use strict';
+const CHROMIUM = process.env.PORTAGE_TEST_CHROMIUM || '/usr/bin/google-chrome';
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const http=require('node:http');
 const pp=require('../tools/node_modules/puppeteer-core');
-const {migrate,originsForFirefox,inertPage,navigateOffline}=require('../tools/indexeddb_migrate.cjs');
+const {migrate,originsForFirefox,inertPage,navigateOffline,restoreOrigin}=require('../tools/indexeddb_migrate.cjs');
 async function main(){
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'portage-idb-test-'));
   const fx=path.join(scratch,'firefox'),chrome=path.join(scratch,'chrome');
@@ -47,10 +48,10 @@ async function main(){
     await browser.close();browser=null;
     assert.deepEqual(originsForFirefox(fx),[...origins].sort());
     const before=hits.slice();
-    const stats=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:'/usr/local/bin/firefox',chromium:'/usr/bin/google-chrome',apply:true,timeout:20000});
+    const stats=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:'/usr/local/bin/firefox',chromium:CHROMIUM,apply:true,timeout:20000});
     assert.equal(stats.restored,2,JSON.stringify(stats));
     assert.deepEqual(hits,before,'IndexedDB migration must not access real origin');
-    browser=await pp.launch({executablePath:'/usr/bin/google-chrome',userDataDir:chrome,headless:true,args:['--disable-background-networking']});
+    browser=await pp.launch({executablePath:CHROMIUM,userDataDir:chrome,headless:true,args:['--disable-background-networking']});
     const verify=await inertPage(browser,'chromium');
     for(const [n,origin] of origins.entries()){
       await navigateOffline(verify,origin,20000);
@@ -75,11 +76,22 @@ async function main(){
         when:'2020-02-03T04:05:06.000Z',bytes:[1,2,3,255],
         big:'12345678901234567890',blob:'file-contents',map:'猫',set:['a','b'],
         undefinedValue:true,negativeZero:true,byName:'site-'+n,byTag:'origin-'+n,autoValue:'origin-'+n});
+      // Invalid structured clone payload must not create a partially valid DB.
+      const rejected=await restoreOrigin(verify,{databases:[{
+        name:'portage-unsupported-test',version:1,stores:[{
+          name:'bad',keyPath:null,autoIncrement:false,indexes:[],
+          records:[[{t:'number',v:1},{t:'unsupported-cryptokey'}]]
+        }]
+      }]});
+      assert.equal(rejected.restored,0);
+      assert.equal(rejected.skipped,1);
+      const after=await verify.evaluate(()=>indexedDB.databases());
+      assert(!after.some(x=>x.name==='portage-unsupported-test'), 'Rejected DB should not exist');
     }
     await verify.close();await browser.close();browser=null;
     assert.deepEqual(hits,before,'No real site traffic including verification');
     // Re-running must never overwrite existing destination IndexedDB databases.
-    const repeated=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:'/usr/local/bin/firefox',chromium:'/usr/bin/google-chrome',apply:true,timeout:20000});
+    const repeated=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:'/usr/local/bin/firefox',chromium:CHROMIUM,apply:true,timeout:20000});
     assert.equal(repeated.restored,0);assert.equal(repeated.skipped,2);
     process.exitCode=undefined;
     console.log('PASS: Firefox 159 -> Chrome 156 indexedDB: 2 origins, schema, indexes, rich values, no target-site traffic');

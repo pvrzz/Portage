@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+const CHROMIUM = process.env.PORTAGE_TEST_CHROMIUM || '/usr/bin/google-chrome';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -20,9 +21,9 @@ async function main() {
   fs.writeFileSync(file,JSON.stringify(bundle),{mode:0o600});
   try {
     assert.equal(validateBundle(bundle).totalKeys,2);
-    await run({bundle:file, userDataDir:profile, browser:'/usr/bin/google-chrome', profileDirectory:'Default', timeout:12000, apply:true});
+    await run({bundle:file, userDataDir:profile, browser:CHROMIUM, profileDirectory:'Default', timeout:12000, apply:true});
     assert.equal(hits,0,'Importer must NOT send a single request to the origin');
-    const browser=await puppeteer.launch({executablePath:'/usr/bin/google-chrome',headless:true,userDataDir:profile,args:['--no-sandbox','--disable-background-networking']});
+    const browser=await puppeteer.launch({executablePath:CHROMIUM,headless:true,userDataDir:profile,args:['--no-sandbox','--disable-background-networking']});
     try {
       const page=await browser.newPage();
       await page.goto(origin);

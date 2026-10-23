@@ -2,6 +2,7 @@
 // Firefox 159 -> AES encrypted Portage file -> offline Chrome 156 import.
 // Creates only disposable profiles and uses synthetic site values.
 'use strict';
+const CHROMIUM = process.env.PORTAGE_TEST_CHROMIUM || '/usr/bin/google-chrome';
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http');
 const assert=require('node:assert/strict');
 const {spawn,spawnSync}=require('node:child_process');
@@ -42,13 +43,13 @@ async function main(){
     // Exercise the actual command-line importer, including encrypted input.
     const imported=spawnSync(process.execPath,[
       'tools/chromium_localstorage_import.cjs',
-      '--bundle',file,'--user-data-dir',chrome,'--browser','/usr/bin/google-chrome',
+      '--bundle',file,'--user-data-dir',chrome,'--browser',CHROMIUM,
       '--passphrase-stdin','--apply'
     ],{input:passphrase+'\n',encoding:'utf8',env:process.env,timeout:30000});
     assert.equal(imported.status,0,imported.stderr+'\n'+imported.stdout);
     assert(imported.stdout.includes('Imported 1/1 origins'), imported.stdout);
     assert.equal(requests,before,'Offline import must not access website');
-    browser=await pp.launch({executablePath:'/usr/bin/google-chrome',headless:true,userDataDir:chrome,args:['--disable-background-networking','--no-first-run']});
+    browser=await pp.launch({executablePath:CHROMIUM,headless:true,userDataDir:chrome,args:['--disable-background-networking','--no-first-run']});
     const page=await browser.newPage();
     await page.goto(origin);
     const v=await page.evaluate(()=>({first:localStorage.getItem('migration_probe'),len:localStorage.getItem('large_probe').length}));

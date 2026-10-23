@@ -2,6 +2,7 @@
 // Real Chromium/Brave WebExtensions smoke test, using only temporary browser
 // profiles and a local HTTP fixture; no personal browser profiles or secrets.
 'use strict';
+const CHROMIUM = process.env.PORTAGE_TEST_CHROMIUM || '/usr/bin/google-chrome';
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const os = require('node:os');
@@ -27,7 +28,7 @@ async function main() {
   const extDir = path.resolve('chrome');
   let browser;
   try {
-    browser = await puppeteer.launch({executablePath: '/usr/bin/google-chrome',headless:true,userDataDir:dir,timeout:25000,pipe:true,enableExtensions:true,args:['--no-sandbox','--disable-gpu','--no-first-run','--no-default-browser-check']});
+    browser = await puppeteer.launch({executablePath: CHROMIUM,headless:true,userDataDir:dir,timeout:25000,pipe:true,enableExtensions:true,args:['--no-sandbox','--disable-gpu','--no-first-run','--no-default-browser-check']});
     const id=await browser.installExtension(extDir);
     console.log('installed id:',id);
     if (!id) throw new Error('Portage extension failed to load');
