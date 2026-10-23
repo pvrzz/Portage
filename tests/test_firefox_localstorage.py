@@ -21,6 +21,7 @@ class FirefoxLocalStorageTest(unittest.TestCase):
 
     def test_utf8_utf16_and_compression(self):
         self.assertEqual(decode_value('日本語'.encode(), 1, 0), '日本語')
+        self.assertEqual(decode_value('日本語', 1, 0), '日本語')
         self.assertEqual(decode_value('日本語'.encode('utf-16-be'), 0, 0), '日本語')
         self.assertEqual(decode_value(b'\x05\x10hello', 1, 1), 'hello')
         with self.assertRaises(ValueError):

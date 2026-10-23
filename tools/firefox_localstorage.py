@@ -79,6 +79,11 @@ def snappy_decode(data: bytes) -> bytes:
 
 
 def decode_value(value, conversion_type, compression_type) -> str:
+    # Gecko LSNG stores some uncompressed UTF-8 values as SQLite TEXT.
+    if isinstance(value, str):
+        if conversion_type == 1 and compression_type == 0:
+            return value
+        raise ValueError('Unexpected SQLite TEXT value encoding')
     raw = bytes(value)
     if compression_type == 1:
         raw = snappy_decode(raw)
@@ -124,7 +129,7 @@ def export_profile(profile: Path):
                         raise ValueError('Non-text localStorage key')
                     items[key] = decode_value(value, conversion, compression)
                 sites.append({'origin': origin, 'items': items})
-        except (sqlite3.Error, ValueError, UnicodeError, OSError) as exc:
+        except (sqlite3.Error, ValueError, TypeError, UnicodeError, OSError) as exc:
             warnings.append(f'Skipped {db.parent.parent.name}: {exc}')
     return sites, warnings
 
