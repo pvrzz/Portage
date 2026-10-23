@@ -145,6 +145,15 @@ class FirefoxLocalStorageTest(unittest.TestCase):
             finally:
                 os.close(descriptor)
             self.assertFalse(firefox_profile_in_use(profile))
+            # Legacy `lock` symlinks encode the owner PID instead of holding
+            # an open descriptor; a live PID must still be detected.
+            lock.unlink()
+            legacy = profile / 'lock'
+            os.symlink(f'somehost:{os.getpid()}', legacy)
+            self.assertTrue(firefox_profile_in_use(profile))
+            legacy.unlink()
+            os.symlink('somehost:99999999', legacy)
+            self.assertFalse(firefox_profile_in_use(profile))
 
     def test_cli_refuses_a_running_profile(self):
         with tempfile.TemporaryDirectory() as t:

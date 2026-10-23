@@ -5,7 +5,8 @@ import sqlite3
 import sys
 from contextlib import closing
 from pathlib import Path
-from urllib.parse import urlsplit
+
+from firefox_localstorage import normalize_origin
 
 
 def list_origins(profile):
@@ -15,14 +16,13 @@ def list_origins(profile):
     result = []
     with closing(sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
         for origin, usage in connection.execute('SELECT origin, client_usages FROM origin'):
-            if not origin or '^' in origin or not isinstance(usage, str) or 'I' not in usage:
+            if not origin or not isinstance(usage, str) or 'I' not in usage:
                 continue  # no privileged schemes or origin-attribute partition flattening
-            try:
-                u = urlsplit(origin)
-                if u.scheme in ('http','https') and u.hostname and u.path in ('','/') and not u.username and not u.password:
-                    result.append(origin.rstrip('/'))
-            except ValueError:
-                pass
+            # Share the LocalStorage exporter's canonicalisation so a stray
+            # uppercase/default-port origin cannot fail the whole run later.
+            normalized = normalize_origin(origin)
+            if normalized:
+                result.append(normalized)
     return sorted(set(result))
 
 

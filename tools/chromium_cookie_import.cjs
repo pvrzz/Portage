@@ -2,7 +2,7 @@
 'use strict';
 /** Private-process Firefox -> Chromium cookie transfer. Do not print cookie values. */
 const cp=require('node:child_process'),path=require('node:path'),fs=require('node:fs');
-const {assertSafeTargetProfile, assertChromiumClosed, assertFirefoxClosed, chromiumLaunchProfileOptions}=require('./profile_safety.cjs');
+const {assertSafeTargetProfile, assertDisjointProfiles, assertChromiumClosed, assertFirefoxClosed, chromiumLaunchProfileOptions}=require('./profile_safety.cjs');
 function assertProfileDirectory(value) {
   if(typeof value!=='string'||!/^[\w. -]+$/.test(value)||value==='.'||value==='..')throw Error('Invalid Chromium profile directory name');
   return value;
@@ -12,6 +12,7 @@ async function transfer({sourceProfile,targetProfile,browserPath,profileDirector
   const target=assertSafeTargetProfile(targetProfile, 'Chromium user-data-dir');
   if(!fs.existsSync(source)||!fs.existsSync(browserPath))throw Error('Source or browser missing');
   if(source===target)throw Error('Source and destination profiles must differ');
+  assertDisjointProfiles(source, target);
   assertProfileDirectory(profileDirectory);
   assertFirefoxClosed(source);
   assertChromiumClosed(target);
@@ -19,8 +20,17 @@ async function transfer({sourceProfile,targetProfile,browserPath,profileDirector
     encoding:'utf8',maxBuffer:32*1024*1024,timeout:20000,stdio:['ignore','pipe','pipe']});
   if(p.status!==0)throw Error('Cookie decoding failed; no destination modifications');
   const parsed=JSON.parse(p.stdout);p.stdout='';
-  let puppeteer=require('puppeteer-core'),browser;
+  let puppeteer=require('puppeteer-core'),browser=null;
   const result={candidate:parsed.cookies.length,skipped:parsed.skipped,accepted:0,failed:0};
+  // Ctrl-C during the import would otherwise leave a stale SingletonLock and a
+  // partially written cookie store. Kill the child we started and drop its lock.
+  const cleanupOnSignal=()=>{
+    try{browser?.process?.()?.kill?.('SIGKILL');}catch{}
+    try{fs.rmSync(path.join(target,'SingletonLock'),{force:true});}catch{}
+    process.exit(130);
+  };
+  process.once('SIGINT',cleanupOnSignal);
+  process.once('SIGTERM',cleanupOnSignal);
   try{
     browser=await puppeteer.launch({executablePath:browserPath,userDataDir:target,headless:true,
       ...chromiumLaunchProfileOptions(target),
@@ -32,7 +42,11 @@ async function transfer({sourceProfile,targetProfile,browserPath,profileDirector
         if(success)result.accepted++;else result.failed++;
       }catch(e){result.failed++;}
     }
-  }finally{if(browser)await browser.close();}
+  }finally{
+    process.removeListener('SIGINT',cleanupOnSignal);
+    process.removeListener('SIGTERM',cleanupOnSignal);
+    try{if(browser)await browser.close();}catch{}
+  }
   return result;
 }
 if(require.main===module){

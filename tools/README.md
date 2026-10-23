@@ -11,7 +11,7 @@ The Portage extension cannot enumerate every origin's LocalStorage via WebExtens
 - LocalStorage can contain live session tokens. **Encrypted AES-256-GCM export is the default**; use a long unique passphrase. `--plaintext` is an explicitly unsafe opt-out. Output is mode 0600. Never attach exported bundles to an issue, share them, or commit them.
 - Require **Python 3** and `cryptography` for encryption (`sudo apt install python3-cryptography` on Debian), and **Node.js 22.12+**, plus Puppeteer Core (`cd tools && npm ci`). Puppeteer Core uses the existing installed Chrome/Brave and downloads no browsers.
 - The exporter reports a **count of IndexedDB origins omitted** (without opening their records); use the IndexedDB section below if you need them.
-- Import is **merge/upsert**: values with matching LocalStorage keys in the target are overwritten. Use a fresh Chromium profile where possible. Failed sites are reported and attempted writes are rolled back within the page when possible; this does not provide cross-origin atomic transactions.
+- Import is **merge/upsert**: values with matching LocalStorage keys in the target are overwritten. Use a fresh Chromium profile where possible. Failed sites are reported and attempted writes are rolled back within the page when possible; this does not provide cross-origin atomic transactions. If an import is interrupted, the target can be left partially updated and a stale Chromium `SingletonLock`; close the browser, restore from your backup, or remove the stale lock after confirming no browser is running.
 - Import launches the browser **headless**, intercepts all page network requests to return inert local HTML, disables service workers for the temporary page, and validates the loaded origin. This avoids visiting live websites but does not formally guarantee that the browser itself makes no background connections. Standard Chrome sandboxing remains enabled.
 - Existing Chromium/Brave profiles keep their normal OS password-store settings: Puppeteer's forced `--password-store=basic` default is dropped for non-empty profiles so imported cookies stay readable after a normal launch. Fresh disposable profiles keep the automation default.
 
@@ -73,7 +73,9 @@ and may keep binary data in separate `.files` directories. **Do not copy its
 SQLite files directly to Chromium.** This optional bridge launches a temporary
 **copy** of your closed Firefox profile in Firefox 159+ using WebDriver BiDi,
 reads each first-party origin's IndexedDB through Firefox's real IndexedDB API,
-then restores databases through Chromium's native IndexedDB API.
+then restores databases through Chromium's native IndexedDB API. The cloned
+profile still contains cookies, passwords and history even though the bridge
+does not read them, so treat `/tmp/portage-idb-*` as sensitive.
 
 During migration both browsers receive only **inert, locally intercepted HTML**
 for each site. In the automated tests the source sites received zero HTTP
@@ -86,7 +88,10 @@ A hard kill or power failure can still leave it behind, so inspect
 `portage-idb-*` in your temporary directory if a run is interrupted.
 
 **Close both browsers and back up both profiles before beginning.** Firefox's
-source is not modified, but Chromium's destination profile **will be changed**
+source is not modified: the profile is copied with reflinks, stale Firefox lock
+markers are dropped, and a profile containing other symlinks is refused (copy
+it to a regular directory first). Source/destination paths that contain each
+other are also refused. Chromium's destination profile **will be changed**
 with `--apply`. Existing IndexedDB databases are **never overwritten**: the
 whole database is skipped if its name already exists at that origin. The
 destination Chromium lock file and the Firefox source profile's open lock are
@@ -115,7 +120,8 @@ the other CLI; run `npm ci --prefix tools` first. Firefox must support WebDriver
 BiDi; validated with Firefox 159.0b5, Google Chrome 156.0.8078.47, and
 **Brave Stable 1.98.60** in disposable test profiles. Origin enumeration reads the QuotaManager `storage.sqlite`
 metadata; only HTTP(S) origins without Firefox container/partition attributes
-are considered. It does not inspect Chrome or Firefox passwords/cookies.
+are considered. It does not read passwords or cookies; the temporary clone
+copies the whole Firefox profile, so treat it as sensitive.
 
 **Migrated**: IndexedDB database names and versions, object stores, key paths,
 auto-increment flags, indexes (including multi-entry/unique), primary keys, and
@@ -124,8 +130,9 @@ BigInt, Date, RegExp, Map/Set, binary buffers and typed arrays, Blob/File).
 
 **Still unsupported**: cyclic or shared object references, CryptoKey,
 non-standard browser objects, IndexedDB databases larger than 32 MiB in the
-wire representation, stores with over 50,000 records, arrays with over 50,000
-elements, and individual Blob/File values larger than 8 MiB. The bridge
+encoded wire representation, stores with over 50,000 records, arrays with over
+50,000 elements, and individual Blob/File/ArrayBuffer/typed-array values larger
+than 8 MiB (checked before they are expanded). The bridge
 **skips entire databases** when it finds unsupported data, and reports
 aggregate counts without printing record values.
 The IndexedDB API does not expose an object store's current auto-increment
@@ -170,7 +177,10 @@ are skipped because the importer closes its temporary Chromium session
 immediately, so they could not survive the import anyway.
 Some cookies or logins remain tied to browser/device-bound secrets; a successful
 CDP `Network.setCookie` result does **not** guarantee continued authentication.
-Never collect or paste exported cookie values into bug reports.
+Never collect or paste exported cookie values into bug reports. If interrupted,
+the target profile can be partially written and a stale `SingletonLock` left
+behind; restore the backup or remove the stale lock after confirming the
+browser is closed.
 
 `node tests/e2e_cookie_cli.cjs` verifies this transfer with synthetic cookie
 values and disposable Brave/Chrome profiles only; set `PORTAGE_TEST_BRAVE` if

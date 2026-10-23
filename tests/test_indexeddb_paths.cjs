@@ -44,6 +44,14 @@ async function main() {
       apply: false,
     }), /must differ|looks like a Firefox profile/);
 
+    // A destination nested inside the Firefox source is refused (it would let
+    // Chromium write into the source profile).
+    await assert.rejects(() => migrate({
+      firefoxProfile: source, chromiumProfile: path.join(source, 'Default'),
+      firefox: path.join(root, 'missing-firefox'), chromium: path.join(root, 'missing-chromium'),
+      apply: false,
+    }), /inside the Firefox source/);
+
     // A Firefox-looking Chromium target is refused before anything is written.
     fs.writeFileSync(path.join(target, 'prefs.js'), '');
     await assert.rejects(() => migrate({

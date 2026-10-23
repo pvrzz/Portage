@@ -10,7 +10,7 @@ const path = require('node:path');
 const os = require('node:os');
 const cp = require('node:child_process');
 const {validOrigin} = require('./chromium_localstorage_import.cjs');
-const {assertSafeTargetProfile, assertChromiumClosed, assertFirefoxClosed, chromiumLaunchProfileOptions} = require('./profile_safety.cjs');
+const {assertSafeTargetProfile, assertDisjointProfiles, cloneFirefoxProfile, assertChromiumClosed, assertFirefoxClosed, chromiumLaunchProfileOptions} = require('./profile_safety.cjs');
 
 function options(argv) {
   const o={apply:false,timeout:20000};
@@ -72,6 +72,7 @@ async function snapshotOrigin(page) {
           r.onblocked=()=>reject(Error('IndexedDB open blocked'));
         });
         const dump={name:db.name,version:db.version,stores:[]};
+        let encodedChars=0;
         for (const storeName of Array.from(db.objectStoreNames)) {
           const tx=db.transaction(storeName,'readonly');
           const store=tx.objectStore(storeName);
@@ -79,7 +80,9 @@ async function snapshotOrigin(page) {
             indexes:Array.from(store.indexNames,n=>{
               const ix=store.index(n);return {name:ix.name,keyPath:ix.keyPath,unique:ix.unique,multiEntry:ix.multiEntry};
             }),records:[]};
-          // Cap retrieval at 50,001 entries; never materialize unbounded stores.
+          // Cap retrieval at 50,001 entries. Individual binary values are
+          // capped in the codec before they are expanded into number arrays,
+          // and the encoded budget below stops oversized databases early.
           const values=await new Promise((resolve,reject)=>{
             const req=store.getAll(undefined,50001);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
           });
@@ -90,7 +93,13 @@ async function snapshotOrigin(page) {
           });
           if(keys.length!==values.length)throw Error('Key/value length mismatch');
           if(values.length>50000)throw Error('Store has over 50000 records (migration safety limit)');
-          for(let j=0;j<values.length;j++)schema.records.push([await encode(keys[j]),await encode(values[j])]);
+          for(let j=0;j<values.length;j++){
+            const encodedKey=await encode(keys[j]);
+            const encodedValue=await encode(values[j]);
+            encodedChars+=JSON.stringify([encodedKey,encodedValue]).length;
+            if(encodedChars>32*1024*1024)throw Error('Database over 32 MiB encoded transport limit');
+            schema.records.push([encodedKey,encodedValue]);
+          }
           dump.stores.push(schema);
         }
         if(JSON.stringify(dump).length>32*1024*1024)throw Error('Database over 32 MiB transport limit');
@@ -198,10 +207,9 @@ async function migrate(opts) {
   // Resolve symlinks: cp -a would otherwise copy a symlink of the source
   // profile and Firefox would be launched against the original profile.
   const fx=realDirectory(opts.firefoxProfile, 'Firefox source profile');
-  const targetCandidate=path.resolve(opts.chromiumProfile);
-  const target=fs.existsSync(targetCandidate)?fs.realpathSync(targetCandidate):targetCandidate;
+  const target=assertSafeTargetProfile(opts.chromiumProfile, 'Chromium user-data-dir');
   if(target===fx)throw Error('Source and destination profiles must differ');
-  assertSafeTargetProfile(target, 'Chromium user-data-dir');
+  assertDisjointProfiles(fx, target);
   assertFirefoxClosed(fx);
   const origins=originsForFirefox(fx);
   console.log(`Firefox IndexedDB inventory: ${origins.length} first-party origin(s); container/partitioned origins intentionally excluded.`);
@@ -217,7 +225,7 @@ async function migrate(opts) {
   // Do NOT launch Firefox against the original profile, which would modify it.
   let fb,cb;const stats={origins:origins.length,restored:0,skipped:0,sourceSkipped:0,errors:[]};
   try {
-    cp.execFileSync('cp',['-a','--reflink=auto',fx,clone],{timeout:120000});
+    cloneFirefoxProfile(fx,clone);
     const pp=require('puppeteer-core');
     fb=await pp.launch({browser:'firefox',protocol:'webDriverBiDi',executablePath:opts.firefox,
       userDataDir:clone,headless:true,timeout:20000,

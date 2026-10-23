@@ -12,6 +12,7 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -129,15 +130,45 @@ def valid_origin(origin: str) -> bool:
     return normalize_origin(origin) is not None
 
 
+def firefox_lock_path(profile: Path):
+    for name in ('.parentlock', 'lock'):
+        candidate = profile / name
+        try:
+            os.lstat(candidate)
+        except OSError:
+            continue
+        return candidate
+    return None
+
+
 def firefox_profile_in_use(profile: Path) -> bool:
     """Detect a Firefox process holding this profile's lock file open.
 
     Existence of .parentlock is not enough because a crash can leave a stale
     lock behind; /proc exposes the open descriptors of the running Firefox.
+    Old macOS/BSD Firefox uses a `lock` symlink such as "host:1234", so fall
+    back to checking that PID if the link has no resolvable target.
     """
-    lock = profile / '.parentlock'
-    if not lock.exists():
+    lock = firefox_lock_path(profile)
+    if lock is None:
         return False
+    if not os.path.exists(lock):
+        # Dangling legacy `lock` symlink ("host:pid"). Path.resolve() does not
+        # raise for it, so inspect the link target directly and check the PID.
+        try:
+            raw = os.readlink(lock)
+        except OSError:
+            return False
+        match = re.search(r':(\d+)$', raw)
+        if not match:
+            return False
+        try:
+            os.kill(int(match.group(1)), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
     try:
         target = str(lock.resolve())
     except OSError:

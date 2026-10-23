@@ -23,6 +23,11 @@ const {encode,decode}=require('../tools/indexeddb_codec.js');
   }
   const cycle={};cycle.self=cycle;
   await assert.rejects(()=>encode(cycle),/cyclic/);
+  const shared={shared:true};
+  await assert.rejects(()=>encode([shared,shared]),/Shared\/cyclic/);
+  // Binary values are rejected before Array.from() expands them.
+  await assert.rejects(()=>encode(new ArrayBuffer(9*1024*1024)),/8 MiB/);
+  await assert.rejects(()=>encode(new Uint8Array(9*1024*1024)),/8 MiB/);
   const special=Object.create(null);Object.defineProperty(special,'__proto__',{value:{safe:1},enumerable:true});
   const recovered=decode(JSON.parse(JSON.stringify(await encode(special))));
   assert.equal(Object.getPrototypeOf(recovered),null);

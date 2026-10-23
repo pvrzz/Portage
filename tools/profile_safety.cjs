@@ -9,8 +9,21 @@ const cp = require('node:child_process');
 
 const FIREFOX_MARKERS = ['prefs.js', 'places.sqlite', 'cookies.sqlite', 'storage.sqlite'];
 
-function assertSafeTargetProfile(directory, label = 'Chromium profile') {
+// Resolve a target path as far as it exists. Existing symlinks are followed so
+// that a link to `/` or the home directory cannot bypass the guard below; for a
+// not-yet-created directory, the parent symlinks are resolved instead.
+function resolveForSafety(directory) {
   const resolved = path.resolve(directory);
+  try {
+    if (fs.existsSync(resolved)) return fs.realpathSync(resolved);
+    const parent = path.dirname(resolved);
+    if (fs.existsSync(parent)) return path.join(fs.realpathSync(parent), path.basename(resolved));
+  } catch { /* fall through to the lexical path */ }
+  return resolved;
+}
+
+function assertSafeTargetProfile(directory, label = 'Chromium profile') {
+  const resolved = resolveForSafety(directory);
   if (resolved === '/' || resolved === os.homedir()) {
     throw new Error(`Refusing to use root or home as ${label}: ${resolved}`);
   }
@@ -20,6 +33,50 @@ function assertSafeTargetProfile(directory, label = 'Chromium profile') {
     }
   }
   return resolved;
+}
+
+function findSymlinks(directory, root = directory, found = []) {
+  for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+    const full = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) found.push(path.relative(root, full));
+    else if (entry.isDirectory()) findSymlinks(full, root, found);
+  }
+  return found;
+}
+
+// Copying a profile that contains symlinks is dangerous: `cp -a` preserves
+// them, so the clone can point back at the original profile or outside the
+// scratch directory. Reflink-copy first (fast), drop Firefox's stale lock
+// markers, then refuse any remaining symlink so Firefox can only write inside
+// the disposable clone. Users with symlinked storage can copy the profile to a
+// regular directory first.
+function cloneFirefoxProfile(source, destination) {
+  cp.execFileSync('cp',
+    ['-a', '--reflink=auto', source, destination],
+    {timeout: 120000});
+  for (const name of ['.parentlock', 'lock']) {
+    try { fs.rmSync(path.join(destination, name), {force: true}); } catch {}
+  }
+  const symlinks = findSymlinks(destination);
+  if (symlinks.length) {
+    throw new Error(`Firefox profile contains symlinks (${symlinks.slice(0, 5).join(', ')}); ` +
+      'copy the profile to a regular directory before IndexedDB migration so the source cannot be modified');
+  }
+}
+
+// Two profiles must not contain each other, otherwise Chromium can write into
+// the Firefox source (or vice versa) despite both paths being individually safe.
+function assertDisjointProfiles(source, target, label = 'Chromium user-data-dir') {
+  const inside = (parent, child) => {
+    const relative = path.relative(parent, child);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  };
+  if (inside(source, target)) {
+    throw new Error(`Refusing overlapping profiles: ${label} is inside the Firefox source profile: ${target}`);
+  }
+  if (inside(target, source)) {
+    throw new Error(`Refusing overlapping profiles: Firefox source profile is inside ${label}: ${source}`);
+  }
 }
 
 const CHROMIUM_KEYRING_DEFAULT_ARGS = ['--password-store=basic', '--use-mock-keychain'];
@@ -60,7 +117,19 @@ function firefoxLockPath(profile) {
 // existence alone is not enough because a crash can leave a stale lock behind.
 function isLockHeld(lockPath) {
   let target;
-  try { target = fs.realpathSync(lockPath); } catch { return false; }
+  try {
+    target = fs.realpathSync(lockPath);
+  } catch {
+    // macOS/BSD Firefox uses `lock`, a symlink such as "host:1234", rather
+    // than an open file descriptor. Fall back to checking that PID.
+    try {
+      const match = /:([0-9]+)$/.exec(fs.readlinkSync(lockPath));
+      if (match) {
+        try { process.kill(Number(match[1]), 0); return true; } catch { return false; }
+      }
+    } catch { /* not a symlink */ }
+    return false;
+  }
   if (fs.existsSync('/proc')) {
     for (const pid of fs.readdirSync('/proc')) {
       if (!/^\d+$/.test(pid)) continue;
@@ -92,4 +161,4 @@ function assertFirefoxClosed(profile) {
   return lockPath;
 }
 
-module.exports = {assertSafeTargetProfile, chromiumLaunchProfileOptions, chromiumLockPath, assertChromiumClosed, firefoxLockPath, isLockHeld, assertFirefoxClosed};
+module.exports = {assertSafeTargetProfile, assertDisjointProfiles, cloneFirefoxProfile, chromiumLaunchProfileOptions, chromiumLockPath, assertChromiumClosed, firefoxLockPath, isLockHeld, assertFirefoxClosed};

@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
-const {assertSafeTargetProfile, chromiumLaunchProfileOptions, chromiumLockPath, assertChromiumClosed, firefoxLockPath, isLockHeld, assertFirefoxClosed} =
+const {transfer} = require('../tools/chromium_cookie_import.cjs');
+const {assertSafeTargetProfile, assertDisjointProfiles, cloneFirefoxProfile, chromiumLaunchProfileOptions, chromiumLockPath, assertChromiumClosed, firefoxLockPath, isLockHeld, assertFirefoxClosed} =
   require('../tools/profile_safety.cjs');
 
 function waitFor(predicate, timeoutMs = 3000) {
@@ -34,6 +35,45 @@ async function main() {
     assert.equal(assertSafeTargetProfile(chromiumProfile), chromiumProfile);
     assert.equal(assertSafeTargetProfile(path.join(root, 'not-created-yet')),
       path.join(root, 'not-created-yet'));
+
+    // A symlink to home or root must not bypass the target guard.
+    const homeLink = path.join(root, 'home-link');
+    fs.symlinkSync(os.homedir(), homeLink);
+    assert.throws(() => assertSafeTargetProfile(homeLink), /root or home/);
+    const rootLink = path.join(root, 'root-link');
+    fs.symlinkSync('/', rootLink);
+    assert.throws(() => assertSafeTargetProfile(rootLink), /root or home/);
+
+    // Profiles that contain each other are unsafe even when each path is
+    // individually acceptable.
+    assert.throws(() => assertDisjointProfiles(firefoxProfile, path.join(firefoxProfile, 'Default')),
+      /inside the Firefox source/);
+    assert.throws(() => assertDisjointProfiles(path.join(root, 'parent', 'child'), path.join(root, 'parent')),
+      /inside Chromium user-data-dir/);
+    assertDisjointProfiles(firefoxProfile, chromiumProfile);
+    await assert.rejects(() => transfer({
+      sourceProfile: firefoxProfile,
+      targetProfile: path.join(firefoxProfile, 'Default'),
+      browserPath: process.execPath,
+    }), /inside the Firefox source/);
+
+    // A dangling legacy `lock` symlink is a stale marker and is dropped from
+    // the clone, but a data symlink makes the copy unsafe and is refused so
+    // Firefox can never write through it into the source or another directory.
+    fs.symlinkSync('somehost:4242', path.join(firefoxProfile, 'lock'));
+    const clone = path.join(root, 'firefox-clone');
+    cloneFirefoxProfile(firefoxProfile, clone);
+    assert.equal(fs.existsSync(path.join(clone, 'lock')), false);
+    fs.unlinkSync(path.join(firefoxProfile, 'lock'));
+
+    const outside = path.join(root, 'outside-storage');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'token.txt'), 'synthetic');
+    fs.symlinkSync(outside, path.join(firefoxProfile, 'storage'));
+    assert.throws(() => cloneFirefoxProfile(firefoxProfile, path.join(root, 'unsafe-clone')),
+      /contains symlinks/);
+    assert.equal(fs.readFileSync(path.join(outside, 'token.txt'), 'utf8'), 'synthetic');
+    fs.unlinkSync(path.join(firefoxProfile, 'storage'));
     // Fresh disposable profiles keep Puppeteer's --password-store=basic, while
     // existing profiles must not be switched to the fallback cookie key store.
     assert.deepEqual(chromiumLaunchProfileOptions(chromiumProfile), {});
@@ -70,6 +110,14 @@ async function main() {
     }
     await waitFor(() => !isLockHeld(path.join(firefoxProfile, '.parentlock')));
     assertFirefoxClosed(firefoxProfile);
+
+    // Legacy `lock` symlinks encode the PID; a live PID means the profile is
+    // in use even though realpath() cannot resolve the symlink target.
+    fs.unlinkSync(path.join(firefoxProfile, '.parentlock'));
+    const legacyLock = path.join(firefoxProfile, 'lock');
+    fs.symlinkSync(`somehost:${process.pid}`, legacyLock);
+    assert.equal(isLockHeld(legacyLock), true);
+    fs.unlinkSync(legacyLock);
     console.log('PASS: profile target and Firefox lock safety checks');
   } finally {
     fs.rmSync(root, {recursive: true, force: true});

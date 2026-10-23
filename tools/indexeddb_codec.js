@@ -1,6 +1,10 @@
 /* Portable, lossless subset of IndexedDB structured-clone values.
    Unsupported types and cyclic/shared references are refused, never silently discarded. */
 'use strict';
+const MAX_BINARY_BYTES = 8 * 1024 * 1024;
+function assertBinaryLimit(bytes, label) {
+  if (bytes > MAX_BINARY_BYTES) throw new Error(label + ' larger than 8 MiB migration limit');
+}
 async function encode(value, seen = new WeakSet()) {
   if (value === null) return {t:'null'};
   const typ = typeof value;
@@ -13,13 +17,17 @@ async function encode(value, seen = new WeakSet()) {
   seen.add(value);
   if(value instanceof Date) return {t:'date',v:Number.isNaN(value.getTime())?'NaN':value.getTime()};
   if(value instanceof RegExp) return {t:'regexp',s:value.source,f:value.flags};
-  if(value instanceof ArrayBuffer) return {t:'buffer',v:Array.from(new Uint8Array(value))};
+  if(value instanceof ArrayBuffer){
+    assertBinaryLimit(value.byteLength,'ArrayBuffer');
+    return {t:'buffer',v:Array.from(new Uint8Array(value))};
+  }
   if(ArrayBuffer.isView(value)) {
+    assertBinaryLimit(value.byteLength,value.constructor.name);
     if (value instanceof DataView) return {t:'dataview',v:Array.from(new Uint8Array(value.buffer,value.byteOffset,value.byteLength))};
     return {t:'typedarray',type:value.constructor.name,v:Array.from(new Uint8Array(value.buffer,value.byteOffset,value.byteLength))};
   }
   if(typeof Blob !== 'undefined' && value instanceof Blob){
-    if(value.size>8*1024*1024)throw new Error('Blob larger than 8 MiB migration limit');
+    assertBinaryLimit(value.size, value instanceof File ? 'File' : 'Blob');
     const v=Array.from(new Uint8Array(await value.arrayBuffer()));
     if(typeof File !== 'undefined' && value instanceof File)return {t:'file',v,name:value.name,mime:value.type,lastModified:value.lastModified};
     return {t:'blob',v,mime:value.type};

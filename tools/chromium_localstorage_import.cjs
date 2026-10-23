@@ -71,8 +71,12 @@ async function passphrasePrompt() {
 
 async function readPassphrase(stdinFlag) {
   if (!stdinFlag) return passphrasePrompt();
-  const chunks=[];
-  for await(const c of process.stdin) chunks.push(c);
+  const chunks=[]; let total=0;
+  for await(const chunk of process.stdin){
+    total+=chunk.length;
+    if(total>1024*1024) throw Error('Passphrase input too large');
+    chunks.push(chunk);
+  }
   const value=Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '');
   if (!value) throw Error('Empty passphrase from standard input');
   return value;
@@ -166,15 +170,30 @@ async function run(opts) {
   if(!fs.existsSync(opts.browser))throw Error('Browser executable not found');
   let puppeteer;
   try{puppeteer=require('puppeteer-core');}catch{try{puppeteer=require('puppeteer');}catch{throw Error('Install puppeteer-core locally (npm i --no-save puppeteer-core)');}}
-  // Never start with a personal profile unless explicitly specified by the operator.
-  // Keep Chrome sandbox enabled; do not pass --no-sandbox.
-  const browser=await puppeteer.launch({executablePath:path.resolve(opts.browser),userDataDir:profile,
-    headless:true,defaultViewport:{width:600,height:400},...chromiumLaunchProfileOptions(profile),
-    args:['--profile-directory='+opts.profileDirectory,'--no-first-run','--no-default-browser-check',
-      '--disable-background-networking','--disable-sync','--disable-extensions','--disable-features=MediaRouter']});
+  let browser=null;
+  // Ctrl-C during --apply would otherwise leave a stale SingletonLock (and a
+  // partially imported profile). Kill the child we started and drop its lock.
+  const cleanupOnSignal=()=>{
+    try{browser?.process?.()?.kill?.('SIGKILL');}catch{}
+    try{fs.rmSync(path.join(profile,'SingletonLock'),{force:true});}catch{}
+    process.exit(130);
+  };
+  process.once('SIGINT',cleanupOnSignal);
+  process.once('SIGTERM',cleanupOnSignal);
   let result;
-  try {result=await restoreSites(browser,sites,opts.timeout);}
-  finally {await browser.close();}
+  try {
+    // Never start with a personal profile unless explicitly specified by the operator.
+    // Keep Chrome sandbox enabled; do not pass --no-sandbox.
+    browser=await puppeteer.launch({executablePath:path.resolve(opts.browser),userDataDir:profile,
+      headless:true,defaultViewport:{width:600,height:400},...chromiumLaunchProfileOptions(profile),
+      args:['--profile-directory='+opts.profileDirectory,'--no-first-run','--no-default-browser-check',
+        '--disable-background-networking','--disable-sync','--disable-extensions','--disable-features=MediaRouter']});
+    result=await restoreSites(browser,sites,opts.timeout);
+  } finally {
+    process.removeListener('SIGINT',cleanupOnSignal);
+    process.removeListener('SIGTERM',cleanupOnSignal);
+    try{if(browser)await browser.close();}catch{}
+  }
   console.log(`Imported ${result.imported}/${sites.length} origins and ${result.keys} keys; skipped ${result.skipped}.`);
   if(result.errors.length)console.log('Skipped (index and reason; no credentials):',JSON.stringify(result.errors));
   if(result.skipped)process.exitCode=2;
