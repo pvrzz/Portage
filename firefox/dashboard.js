@@ -246,7 +246,9 @@ async function importCookies(items, onProg) {
       if (!c.session && Number.isFinite(c.expirationDate)) d.expirationDate = c.expirationDate;
       if (targetStore?.id) d.storeId = targetStore.id;
       if (c.partitionKey?.topLevelSite) d.partitionKey = { topLevelSite: c.partitionKey.topLevelSite };
-      if (c.firstPartyDomain && IS_FIREFOX) d.firstPartyDomain = c.firstPartyDomain;
+      // Firefox requires firstPartyDomain even for the default (empty) domain
+      // when First-Party Isolation is enabled.
+      if (IS_FIREFOX) d.firstPartyDomain = c.firstPartyDomain || "";
       if (await api.cookies.set(d)) imported++; else skipped++;
     } catch { skipped++; }
     if (i % 100 === 0) { onProg(i, total); await tick(); }

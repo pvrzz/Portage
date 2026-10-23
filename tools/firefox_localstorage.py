@@ -115,7 +115,7 @@ def export_profile(profile: Path):
                 entries = conn.execute('SELECT key, value, conversion_type, compression_type FROM data').fetchall()
                 if not entries:
                     continue
-                items = {}
+                items = {}  # Preserve all JSON keys, including "__proto__".
                 for key, value, conversion, compression in entries:
                     if not isinstance(key, str):
                         raise ValueError('Non-text localStorage key')

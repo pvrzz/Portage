@@ -49,4 +49,6 @@ For tests (synthetic, no personal browser data):
 ```sh
 python3 -m unittest discover -s tests -p 'test_*.py'
 node tests/test_storage_browser.cjs
+# Optional: requires Puppeteer and a local Chrome installation; uses a temp profile
+node tests/e2e_chrome.cjs
 ```
