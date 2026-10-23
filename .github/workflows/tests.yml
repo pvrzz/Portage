@@ -1,0 +1,28 @@
+name: Unit tests
+on:
+  push:
+    branches: [main, feat/profile-storage-migration]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Python tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Browser API mock tests
+        run: node tests/test_storage_browser.cjs
+      - name: JavaScript syntax
+        run: |
+          node --check chrome/dashboard.js
+          node --check firefox/dashboard.js
+          node --check tools/chromium_localstorage_import.cjs
+          node --check tests/e2e_cross_browser.cjs
+      - name: CLI help
+        run: node tools/chromium_localstorage_import.cjs --help

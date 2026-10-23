@@ -5,6 +5,9 @@ This is deliberately an offline, read-only exporter. It never accesses network
 services, Firefox cookies, passwords, or browser extension profiles.
 """
 import argparse
+import base64
+import getpass
+import hashlib
 from contextlib import closing
 import json
 import os
@@ -130,6 +133,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', type=Path, required=True, help='Firefox profile folder from about:profiles')
     parser.add_argument('--output', type=Path, required=True, help='New private .portage.json bundle (contains session secrets)')
+    parser.add_argument('--plaintext', action='store_true', help='DANGEROUS: disable default AES-256-GCM encryption')
+    parser.add_argument('--passphrase-stdin', action='store_true', help='Read encryption passphrase from stdin instead of prompting')
     args = parser.parse_args(argv)
     profile = args.profile.expanduser().resolve()
     output = args.output.expanduser().resolve()
@@ -138,15 +143,50 @@ def main(argv=None):
     if not profile.is_dir():
         parser.error('Profile directory does not exist')
     sites, warnings = export_profile(profile)
+    # Inventory unsupported IndexedDB without opening or reading any IDB records.
+    # Counts, not credential-bearing names/values, go into the bundle metadata.
+    idb_count = sum(1 for directory in (profile / 'storage' / 'default').glob('*/idb')
+                    if directory.is_dir() and any(directory.glob('*.sqlite')))
     if not sites:
         parser.error('No compatible localStorage origins found (see warnings / profile path)')
     bundle = {
         'portage': {'format': 'portage-bundle', 'version': 1, 'source': 'firefox',
                     'generator': 'Portage offline localStorage exporter',
                     'exportedAt': datetime.now(timezone.utc).isoformat()},
-        'meta': {'counts': {'localStorage': len(sites)}},
+        'meta': {'counts': {'localStorage': len(sites)},
+                 'unsupported': {'indexedDBOrigins': idb_count}},
         'data': {'localStorage': sites},
     }
+    if not args.plaintext:
+        # Uses the same PBKDF2 + AES-GCM wire format as the extension itself.
+        # Imported lazily: plaintext mode has no third-party dependencies.
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        except ImportError:
+            parser.error('Encryption needs cryptography: pip install cryptography (or explicitly use --plaintext)')
+        if args.passphrase_stdin:
+            phrase = sys.stdin.readline().rstrip('\r\n')
+        elif sys.stdin.isatty():
+            phrase = getpass.getpass('Portage encryption passphrase: ')
+        else:
+            parser.error('Encrypted export requires a TTY, or --passphrase-stdin')
+        if len(phrase) < 16:
+            parser.error('Use a passphrase of at least 16 characters')
+        salt, iv, iterations = os.urandom(16), os.urandom(12), 250000
+        key = hashlib.pbkdf2_hmac('sha256', phrase.encode('utf8'), salt, iterations, dklen=32)
+        inner = json.dumps({'meta': bundle['meta'], 'data': bundle['data']}, ensure_ascii=False, separators=(',', ':')).encode('utf8')
+        ciphertext = AESGCM(key).encrypt(iv, inner, None)
+        bundle = {
+            'portage': {
+                'format':'portage-bundle-encrypted', 'version':1, 'source':'firefox',
+                'generator': 'Portage offline localStorage exporter',
+                'exportedAt': bundle['portage']['exportedAt'],
+                'cipher':'AES-GCM','keyLength':256,'kdf':'PBKDF2','hash':'SHA-256',
+                'iterations':iterations,'salt':base64.b64encode(salt).decode(),
+                'iv':base64.b64encode(iv).decode(),
+            },
+            'ciphertext':base64.b64encode(ciphertext).decode(),
+        }
     # Create mode 0600: no permissive intermediate file, no clobber.
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -155,8 +195,10 @@ def main(argv=None):
     except BaseException:
         output.unlink(missing_ok=True)
         raise
-    print(f'Exported {len(sites)} origins to {output} (PRIVATE, UNENCRYPTED)')
+    print(f'Exported {len(sites)} origins to {output} (PRIVATE, '+('UNENCRYPTED' if args.plaintext else 'AES-256-GCM encrypted')+')')
     print('The bundle may contain active login tokens. Do not upload or share it.')
+    if idb_count:
+        print(f'WARNING: IndexedDB exists for {idb_count} origin(s) and is NOT migrated.', file=sys.stderr)
     for warning in warnings:
         print('WARNING:', warning, file=sys.stderr)
     if warnings:

@@ -64,12 +64,6 @@ Check the releases tab of the repo, or go to the website for Portage at: https:/
 1. **Export:** Open Portage on your old browser, click **Scan**, uncheck anything you want to leave behind, and hit **Export bundle**. It drops the JSON (and the optional extension checklist) right to your downloads.
 2. **Import:** Open Portage on your new browser, drag and drop the `.portage.json` file, review the stats, and hit **Import selected**.
 
-## Experimental: entire Firefox localStorage profile (Linux)
+## Experimental: whole-profile Firefox LocalStorage transfer (Linux)
 
-The browser's WebExtension APIs cannot enumerate every origin's localStorage.
-For a read-only **all-site** Firefox profile exporter and an import flow that
-visits each origin in a temporary background tab, see
-[tools/README.md](tools/README.md). This is **not** limited to currently open
-tabs, but is still best-effort: IndexedDB, sessionStorage, and device-bound
-credentials are not migrated. Exports can contain active authentication tokens,
-so handle them as sensitive files.
+Optional Python + Node helpers can migrate **all compatible first-party origins**, not just open tabs, to a closed Chrome/Brave profile. Export is encrypted by default; import uses intercepted inert responses rather than contacting websites. See the [step-by-step CLI and privacy limitations](tools/README.md). This does **not** include IndexedDB or guarantee login-session preservation.

@@ -44,17 +44,20 @@ class FirefoxLocalStorageTest(unittest.TestCase):
                     con.execute('CREATE TABLE data (key TEXT, utf16_length INTEGER, conversion_type INTEGER, compression_type INTEGER, last_access_time INTEGER, value BLOB)')
                     con.execute('INSERT INTO data VALUES (?,?,?,?,?,?)',('login',len(value),1,0,0,value.encode()))
                 con.close()
+            (p/'storage'/'default'/'idb-site'/'idb').mkdir(parents=True)
+            (p/'storage'/'default'/'idb-site'/'idb'/'1.sqlite').touch()
             sites,warnings=export_profile(p)
             self.assertEqual(len(sites),2)
             self.assertFalse(warnings)
             self.assertEqual([s['origin'] for s in sites],['https://first.test','https://second.test'])
             output=p/'export.portage.json'
             script=Path(__file__).resolve().parents[1]/'tools'/'firefox_localstorage.py'
-            r=subprocess.run([sys.executable,str(script),'--profile',str(p),'--output',str(output)],capture_output=True,text=True)
+            r=subprocess.run([sys.executable,str(script),'--profile',str(p),'--output',str(output),'--plaintext'],capture_output=True,text=True)
             self.assertEqual(r.returncode,0,r.stderr)
             self.assertEqual(os.stat(output).st_mode & 0o777,0o600)
             parsed=json.loads(output.read_text())
             self.assertEqual(parsed['meta']['counts']['localStorage'],2)
+            self.assertEqual(parsed['meta']['unsupported']['indexedDBOrigins'],1)
             self.assertEqual(len(parsed['data']['localStorage']),2)
             self.assertNotEqual(subprocess.run([sys.executable,str(script),'--profile',str(p),'--output',str(output)],capture_output=True).returncode,0)
 

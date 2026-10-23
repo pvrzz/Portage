@@ -253,61 +253,6 @@ async function importCookies(items, onProg) {
   onProg(total, total); return { imported, skipped };
 }
 
-// A companion read-only Python CLI enumerates *every* compatible Firefox LSNG
-// database in the profile. This import is NOT restricted to currently open tabs.
-// WebExtension scripting is origin-scoped, so we temporarily visit each origin
-// in a background tab to seed its localStorage, then close that tab.
-function isSafeStorageOrigin(origin) {
-  try {
-    const u = new URL(origin);
-    return ["https:", "http:"].includes(u.protocol) && u.origin === origin && !u.username && !u.password;
-  } catch { return false; }
-}
-async function importLocalStorage(sites, onProg) {
-  const total = sites.length; let imported = 0, skipped = 0;
-  if (!api.scripting?.executeScript) throw new Error("The scripting permission is unavailable");
-  for (let i = 0; i < total; i++) {
-    const site = sites[i];
-    let tab;
-    try {
-      if (!isSafeStorageOrigin(site.origin) || !site.items ||
-          typeof site.items !== "object" || Array.isArray(site.items) ||
-          Object.values(site.items).some((v) => typeof v !== "string")) throw new Error("Invalid origin or values");
-      tab = await api.tabs.create({ url: site.origin, active: false });
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => { api.tabs.onUpdated.removeListener(listener); reject(new Error("Timed out")); }, 12000);
-        const listener = (id, changeInfo) => {
-          if (id === tab.id && changeInfo.status === "complete") {
-            clearTimeout(timeout); api.tabs.onUpdated.removeListener(listener); resolve();
-          }
-        };
-        api.tabs.onUpdated.addListener(listener);
-        // Covers a tab finishing before listener registration.
-        api.tabs.get(tab.id).then((t) => { if (t.status === "complete") listener(tab.id, { status: "complete" }); }).catch(() => {});
-      });
-      // Never write a saved origin's keys into a different (redirected) site.
-      const loaded = await api.tabs.get(tab.id);
-      if (!loaded.url || new URL(loaded.url).origin !== site.origin) throw new Error("Origin redirected");
-      const result = await api.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (entries) => {
-          let written = 0;
-          for (const [k, v] of Object.entries(entries)) { localStorage.setItem(k, v); written++; }
-          return written;
-        },
-        args: [site.items],
-      });
-      if (result?.[0]?.result === Object.keys(site.items).length) imported++; else skipped++;
-    } catch { skipped++; }
-    finally {
-      if (tab?.id) { try { await api.tabs.remove(tab.id); } catch {} }
-      onProg(i + 1, total);
-      if (i % 10 === 0) await tick();
-    }
-  }
-  return { imported, skipped };
-}
-
 async function importTabs(items, onProg) {
   const total = items.length; let imported = 0, skipped = 0;
   for (let i = 0; i < total; i++) {
@@ -347,20 +292,19 @@ async function importReadingList(items, onProg) {
 const CATS = {
   bookmarks: { label: "Bookmarks", unit: "bookmarks", icon: SVG.bookmarks, level: "full", desc: "Full bookmark tree, folders and all", importFx: "Created in a 'Portage Import' folder", collect: collectBookmarks, count: countBookmarks, importRun: importBookmarks },
   history:   { label: "History", unit: "pages", icon: SVG.history, level: "full", desc: "Pages you've visited, with timestamps", importFx: IS_FIREFOX ? "Re-added with titles & times" : "Re-added as visits", collect: collectHistory, count: (d) => d.length, importRun: importHistory },
-  localStorage: { label: "LocalStorage", unit: "origins", icon: SVG.cookies, level: "partial", desc: "All-site Firefox profile storage (offline CLI bundle)", importFx: "Visits each origin temporarily to restore saved keys", collect: null, count: (d) => d.length, importRun: importLocalStorage, externalImportOnly: true },
   cookies:   { label: "Cookies", unit: "cookies", icon: SVG.cookies, level: "full", desc: "Site cookies — keeps you signed in", importFx: "Re-set so logins carry over", collect: collectCookies, count: (d) => d.length, importRun: importCookies },
   tabs:      { label: "Open tabs", unit: "tabs", icon: SVG.tabs, level: "full", desc: "Tabs open right now, every window", importFx: "Reopened in this window", collect: collectTabs, count: (d) => d.length, importRun: importTabs },
   sessions:  { label: "Recently closed", unit: "sessions", icon: SVG.sessions, level: "partial", desc: "Tabs & windows you closed recently", importFx: "Reopened as tabs", collect: collectSessions, count: countSessions, importRun: importSessions },
   readingList: { label: "Reading list", unit: "entries", icon: SVG.reading, level: HAS_READINGLIST ? "full" : "partial", desc: "Pages saved to read later", importFx: HAS_READINGLIST ? "Added to the reading list" : "Saved to a bookmark folder", collect: collectReadingList, count: (d) => d.length, importRun: importReadingList, needsReadingList: true },
   extensions: { label: "Extensions", unit: "installed", icon: SVG.extensions, level: "checklist", desc: "Installed add-ons → reinstall checklist", importFx: "Can't auto-install — use the .txt checklist", collect: collectExtensions, count: (d) => d.length, importRun: null, special: true },
 };
-const ORDER = ["bookmarks", "history", "cookies", "localStorage", "tabs", "sessions", "readingList", "extensions"];
+const ORDER = ["bookmarks", "history", "cookies", "tabs", "sessions", "readingList", "extensions"];
 
 const exState = {};
 let scanned = false;
 const exGrid = document.getElementById("exportGrid");
 
-function exportCategoryIds() { return ORDER.filter((id) => !CATS[id].externalImportOnly && !(CATS[id].needsReadingList && !HAS_READINGLIST)); }
+function exportCategoryIds() { return ORDER.filter((id) => !(CATS[id].needsReadingList && !HAS_READINGLIST)); }
 
 function makeCard(id, c, opts) {
   const el = document.createElement("div");
@@ -668,10 +612,6 @@ function updateImportTotals() {
 }
 
 async function runImport() {
-  if (imState.localStorage?.selected && !window.confirm(
-    "LocalStorage import will visit every saved site in temporary background tabs. " +
-    "This sends network requests and may trigger website activity. Continue?"
-  )) return;
   const btn = document.getElementById("importBtn"); const orig = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Importing…';
   document.getElementById("impbarWrap").classList.remove("hidden");

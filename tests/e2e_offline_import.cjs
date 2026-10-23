@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const http = require('node:http');
+let puppeteer; try { puppeteer = require('../tools/node_modules/puppeteer-core'); } catch { puppeteer = require('puppeteer'); }
+const {run,validateBundle} = require('../tools/chromium_localstorage_import.cjs');
+
+async function main() {
+  let hits=0;
+  const server=http.createServer((req,res)=>{hits++;res.writeHead(200,{'content-type':'text/html'});res.end('<!doctype html><title>Fixture</title>');});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'portage-offline-e2e-'));
+  const profile=path.join(dir,'profile');
+  const origin=`http://127.0.0.1:${server.address().port}`;
+  const bundle={portage:{format:'portage-bundle',version:1,source:'firefox'},data:{localStorage:[{origin,items:{token:'synthetic-value',a:'猫'}}]}};
+  const file=path.join(dir,'synthetic.portage.json');
+  fs.writeFileSync(file,JSON.stringify(bundle),{mode:0o600});
+  try {
+    assert.equal(validateBundle(bundle).totalKeys,2);
+    await run({bundle:file, userDataDir:profile, browser:'/usr/bin/google-chrome', profileDirectory:'Default', timeout:12000, apply:true});
+    assert.equal(hits,0,'Importer must NOT send a single request to the origin');
+    const browser=await puppeteer.launch({executablePath:'/usr/bin/google-chrome',headless:true,userDataDir:profile,args:['--no-sandbox','--disable-background-networking']});
+    try {
+      const page=await browser.newPage();
+      await page.goto(origin);
+      assert.equal(await page.evaluate(()=>localStorage.getItem('token')),'synthetic-value');
+      assert.equal(await page.evaluate(()=>localStorage.getItem('a')),'猫');
+    } finally {await browser.close();}
+    console.log('PASS Chrome offline LocalStorage restore: zero origin requests during import; persistent after restart');
+  } finally {
+    await new Promise(resolve=>server.close(resolve));
+    fs.rmSync(dir,{recursive:true,force:true});
+  }
+}
+main().catch(err=>{console.error(err.stack);process.exitCode=1;});

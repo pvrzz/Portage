@@ -1,54 +1,60 @@
-# Whole-profile LocalStorage migration (experimental, Linux)
+# Experimental whole-profile Firefox → Chromium LocalStorage migration
 
-The browser extension cannot enumerate another browser's complete site storage via
-WebExtension APIs. Portage's companion script therefore reads **all compatible
-first-party Firefox LSNG localStorage databases**, not only open tabs. It is
-read-only and standard-library-only (no Internet requests).
+The Portage extension cannot enumerate every origin's LocalStorage via WebExtension APIs. This optional Linux companion migrates **every compatible first-party Firefox LocalStorage origin** by reading the offline Firefox profile and writing via a separate, headless Chrome/Brave session. It does **not** depend on currently open tabs, and does **not** visit the real websites during import.
 
-**Privacy:** localStorage often includes authentication tokens. Output is
-**UNENCRYPTED** JSON and created with mode `0600`. Do not share, attach to bug
-reports, or commit it. After migration, securely manage/delete the file per
-local policy. Keep an offline backup of your Firefox profile.
+**This is not complete browser-profile migration.** It does *not* migrate IndexedDB, sessionStorage, Service Workers, Firefox Containers, partitioned localStorage, WebAuthn/passkeys, or device-bound session credentials. Login persistence cannot be guaranteed. Cookies and bookmarks can be migrated separately using the standard Portage extension.
 
-1. In Firefox `about:profiles`, find the **Root Directory** of the intended
-   profile. Close Firefox to avoid racing database changes.
-2. Export in a private directory:
+## Safety / prerequisites
 
-   ```sh
+- Backup the Firefox and Chromium/Brave profiles first.
+- Close Firefox before exporting; close Brave/Chrome before applying to its profile. The importer refuses an existing Chromium `SingletonLock`.
+- LocalStorage can contain live session tokens. **Encrypted AES-256-GCM export is the default**; use a long unique passphrase. `--plaintext` is an explicitly unsafe opt-out. Output is mode 0600. Never attach exported bundles to an issue, share them, or commit them.
+- Require **Python 3** and `cryptography` for encryption (`sudo apt install python3-cryptography` on Debian), and **Node.js 20+**, plus Puppeteer Core (`cd tools && npm install`). Puppeteer Core uses the existing installed Chrome/Brave and downloads no browsers.
+- The exporter reports a **count of IndexedDB origins omitted** (without opening their records), so you can estimate missing coverage.
+- Import is **merge/upsert**: values with matching LocalStorage keys in the target are overwritten. Use a fresh Chromium profile where possible. Failed sites are reported and attempted writes are rolled back within the page when possible; this does not provide cross-origin atomic transactions.
+- Import launches the browser **headless**, intercepts all page network requests to return inert local HTML, disables service workers for the temporary page, and validates the loaded origin. This avoids visiting live websites but does not formally guarantee that the browser itself makes no background connections. Standard Chrome sandboxing remains enabled.
+
+## Usage on Linux
+
+1. Open `about:profiles` in Firefox to find your intended profile's **Root Directory**. Close Firefox, then run:
+
+   ```bash
    python3 tools/firefox_localstorage.py \
-       --profile '/path/from/about:profiles' \
-       --output "$HOME/portage-localstorage.portage.json"
+     --profile "$HOME/.mozilla/firefox/your-profile" \
+     --output "$HOME/firefox-storage.portage.json"
    ```
 
-3. Install the **unpacked** `chrome/` Portage extension in Brave (Developer mode)
-   or `firefox/` in Firefox. Open Portage, switch to Import, and load the new
-   `.portage.json` file. Select LocalStorage and choose **Import selected**.
-4. The extension visits *every exported origin*, sequentially, in temporary
-   background tabs and writes the saved localStorage, then closes the tabs.
-   This causes real network requests to those sites. It may trigger background
-   actions; do not perform this on a production profile without a backup.
-   The importer reports imported/skipped **origins**, not individual keys.
+   An encryption passphrase will be requested. For non-interactive usage, pipe a secret securely through `--passphrase-stdin` (never put it in shell command arguments). No upload/network request is performed.
 
-## Scope and limitations
+2. Install the *optional* importer dependency, once:
 
-- First-party HTTP(S) localStorage from `storage/default/*/ls/data.sqlite`.
-- Handles UTF-8 and UTF-16BE, plus Firefox raw Snappy compression.
-- Skips partitioned/container origin attributes rather than merging them into
-  a different privacy context. Logs skipped/corrupt databases without contents.
-- Does **not** migrate IndexedDB, sessionStorage, WebAuthn credentials, cookies,
-  service workers, or origin-bound browser keys. Portage's regular browser UI
-  handles cookies as a separate category.
-- Does not guarantee uninterrupted login state. Some sites need fresh login.
-- No login credentials are read from `logins.json`.
-- Chromium must be able to load a site for its storage to be written via a
-  content script. Redirects, dead origins, missing permissions and browser
-  restrictions may cause individual origins to be skipped.
+   ```bash
+   cd tools && npm install && cd ..
+   ```
 
-For tests (synthetic, no personal browser data):
+3. Close Brave. Check data counts in **dry-run** mode (the default):
 
-```sh
+   ```bash
+   node tools/chromium_localstorage_import.cjs \
+     --bundle "$HOME/firefox-storage.portage.json" \
+     --browser /usr/bin/brave-browser \
+     --user-data-dir "$HOME/.config/BraveSoftware/Brave-Browser"
+   ```
+
+   Only the counts are printed; there are no browser changes. To actually import, repeat with `--apply` appended. Provide `--profile-directory 'Profile 1'` if your target is not `Default`. Replace `/usr/bin/brave-browser` with the executable on your system.
+
+4. Launch Brave normally and inspect the sites you care about. **Delete the encrypted migration file when no longer needed.** Restore from your backup if necessary.
+
+## Tests (all synthetic profiles; no personal browser data)
+
+```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
 node tests/test_storage_browser.cjs
-# Optional: requires Puppeteer and a local Chrome installation; uses a temp profile
+# Optional desktop E2E: local Firefox 159 and Chrome 156 were verified;
+# needs installed Firefox and Google Chrome plus Puppeteer
+node tests/e2e_cross_browser.cjs
+node tests/e2e_offline_import.cjs
 node tests/e2e_chrome.cjs
 ```
+
+Chromium E2E tests verify that **requests to the synthetic target origin equal zero during import**, and the stored values remain readable after browser restart. The cross-browser test verifies Firefox LSNG decoding, AES encryption compatibility and Chromium restoration. Neither test guarantees the preservation of real-world login sessions.

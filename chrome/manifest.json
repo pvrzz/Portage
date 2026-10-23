@@ -11,8 +11,7 @@
     "tabs",
     "sessions",
     "management",
-    "readingList",
-    "scripting"
+    "readingList"
   ],
   "host_permissions": [
     "<all_urls>"

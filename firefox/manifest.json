@@ -21,8 +21,7 @@
     "cookies",
     "tabs",
     "sessions",
-    "management",
-    "scripting"
+    "management"
   ],
   "host_permissions": [
     "<all_urls>"
