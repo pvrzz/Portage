@@ -1,8 +1,10 @@
 name: Unit tests
 on:
   push:
-    branches: [main, feat/profile-storage-migration]
+    branches: [main]
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -14,24 +16,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Python dependencies
+        run: python3 -m pip install cryptography
       - name: Python tests
         run: python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Browser API mock tests
         run: node tests/test_storage_browser.cjs
+      - name: Profile safety tests
+        run: node tests/test_profile_safety.cjs
       - name: IndexedDB codec tests
         run: node tests/test_indexeddb_codec.cjs
+      - name: IndexedDB path tests
+        run: node tests/test_indexeddb_paths.cjs
       - name: Python syntax
-        run: python3 -m py_compile tools/list_firefox_idb_origins.py tools/firefox_localstorage.py tools/firefox_cookie_stream.py
+        run: python3 -m py_compile tools/*.py tests/*.py
       - name: JavaScript syntax
         run: |
-          node --check chrome/dashboard.js
-          node --check firefox/dashboard.js
-          node --check tools/chromium_localstorage_import.cjs
-          node --check tests/e2e_cross_browser.cjs
-          node --check tools/indexeddb_migrate.cjs
-          node --check tools/indexeddb_codec.js
-          node --check tests/e2e_indexeddb.cjs
-          node --check tools/chromium_cookie_import.cjs
-          node --check tests/e2e_cookie_cli.cjs
+          for file in tools/*.cjs tools/*.js tests/*.cjs chrome/dashboard.js firefox/dashboard.js; do
+            node --check "$file"
+          done
       - name: CLI help
-        run: node tools/chromium_localstorage_import.cjs --help
+        run: |
+          node tools/chromium_localstorage_import.cjs --help
+          node tools/indexeddb_migrate.cjs --help

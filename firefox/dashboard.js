@@ -145,15 +145,19 @@ async function collectHistory() {
   return { data, count: data.length };
 }
 async function collectCookies() {
-  // Firefox's default getAll({}) omits Total Cookie Protection partitions.
-  // Firefox accepts partitionKey:{} to return both partitioned and normal cookies.
-  // First-Party Isolation requires firstPartyDomain:null to include all domains.
+  // Both Chrome and Firefox omit partitioned (CHIPS / Total Cookie Protection)
+  // cookies unless a partitionKey filter is requested. An empty filter matches
+  // partitioned and unpartitioned cookies, so ask for both.
+  // Firefox additionally needs firstPartyDomain:null to include First-Party
+  // Isolation cookies. Each cookie store is queried separately because store
+  // IDs are browser-specific and isolated stores must not be merged.
   const stores = await api.cookies.getAllCookieStores();
   const all = [];
   for (const store of stores) {
-    const query = { storeId: store.id };
-    if (IS_FIREFOX) { query.partitionKey = {}; query.firstPartyDomain = null; }
-    all.push(...await api.cookies.getAll(query));
+    const query = { storeId: store.id, partitionKey: {} };
+    if (IS_FIREFOX) query.firstPartyDomain = null;
+    try { all.push(...await api.cookies.getAll(query)); }
+    catch { /* A store this context cannot read must not abort the whole scan. */ }
   }
   const data = all.map((c) => ({
     name: c.name, value: c.value, domain: c.domain, path: c.path,
@@ -230,24 +234,37 @@ function mapSameSite(s) {
 async function importCookies(items, onProg) {
   const total = items.length; let imported = 0, skipped = 0;
   // Store IDs are browser-specific. Only copy into the selected browser's
-  // default cookie store; isolated Firefox Containers are not safely mergeable.
-  const stores = await api.cookies.getAllCookieStores();
-  const targetStore = stores.find((s) => s.id === (IS_FIREFOX ? "firefox-default" : "0")) || stores[0];
+  // default cookie store; isolated Firefox Containers (and private/incognito
+  // stores) are not safely mergeable. Never fall back to an arbitrary store.
+  const defaultStoreId = IS_FIREFOX ? "firefox-default" : "0";
   for (let i = 0; i < total; i++) {
     const c = items[i];
     try {
       const host = (c.domain || "").replace(/^\./, "");
       if (!host || (c.firstPartyDomain && !IS_FIREFOX)) { skipped++; continue; }
       // Do not silently collapse isolated container stores into one login.
-      if (c.storeId && c.storeId !== "firefox-default" && c.storeId !== "0" && c.storeId !== targetStore?.id) { skipped++; continue; }
+      if (c.storeId && c.storeId !== "firefox-default" && c.storeId !== "0" && c.storeId !== defaultStoreId) { skipped++; continue; }
       const url = (c.secure ? "https" : "http") + "://" + host + (c.path || "/");
-      const d = { url, name: c.name, value: c.value, path: c.path || "/", secure: !!c.secure, httpOnly: !!c.httpOnly, sameSite: mapSameSite(c.sameSite) };
+      const d = { url, name: c.name, value: c.value, path: c.path || "/", secure: !!c.secure, httpOnly: !!c.httpOnly };
+      // Omitting sameSite has the same meaning as "unspecified" and avoids
+      // depending on that enum value being supported by older browsers.
+      const sameSite = mapSameSite(c.sameSite);
+      if (sameSite !== "unspecified") d.sameSite = sameSite;
       if (!c.hostOnly) d.domain = c.domain;
       if (!c.session && Number.isFinite(c.expirationDate)) d.expirationDate = c.expirationDate;
-      if (targetStore?.id) d.storeId = targetStore.id;
-      if (c.partitionKey?.topLevelSite) d.partitionKey = { topLevelSite: c.partitionKey.topLevelSite };
-      // Firefox requires firstPartyDomain even for the default (empty) domain
-      // when First-Party Isolation is enabled.
+      d.storeId = defaultStoreId;
+      if (c.partitionKey?.topLevelSite) {
+        d.partitionKey = { topLevelSite: c.partitionKey.topLevelSite };
+        // The ancestor bit changes which embedding contexts can read it;
+        // dropping it would move third-party cookies between partitions.
+        if (typeof c.partitionKey.hasCrossSiteAncestor === "boolean") {
+          d.partitionKey.hasCrossSiteAncestor = c.partitionKey.hasCrossSiteAncestor;
+        }
+      }
+      // Firefox's cookies.set rejects calls without firstPartyDomain when
+      // First-Party Isolation is enabled; pass the source value (or the default
+      // empty domain) so non-FPI imports keep working. FPI cookies arriving
+      // from Chrome are skipped above because their first-party context is lost.
       if (IS_FIREFOX) d.firstPartyDomain = c.firstPartyDomain || "";
       if (await api.cookies.set(d)) imported++; else skipped++;
     } catch { skipped++; }

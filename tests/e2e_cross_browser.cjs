@@ -3,19 +3,21 @@
 // Creates only disposable profiles and uses synthetic site values.
 'use strict';
 const CHROMIUM = process.env.PORTAGE_TEST_CHROMIUM || '/usr/bin/google-chrome';
+const FIREFOX = process.env.PORTAGE_TEST_FIREFOX || '/usr/local/bin/firefox';
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http');
 const assert=require('node:assert/strict');
 const {spawn,spawnSync}=require('node:child_process');
 let pp; try { pp = require('../tools/node_modules/puppeteer-core'); } catch { pp = require('puppeteer'); }
 const {decryptWrapper,validateBundle,restoreSites}=require('../tools/chromium_localstorage_import.cjs');
 function fire(args) {return new Promise((resolve,reject)=>{
-  let stderr='';const p=spawn('/usr/local/bin/firefox',args,{stdio:['ignore','ignore','pipe']});
+  let stderr='';const p=spawn(FIREFOX,args,{stdio:['ignore','ignore','pipe']});
   p.stderr.on('data',b=>{stderr+=b.toString()});
   const kill=setTimeout(()=>{p.kill();reject(new Error('Firefox timeout'))},20000);
   p.on('error',e=>{clearTimeout(kill);reject(e)});
   p.on('exit',code=>{clearTimeout(kill);if(code!==0)reject(new Error(`Firefox exited ${code}: ${stderr.slice(-500)}`));else resolve()});
 });}
 async function main(){
+  if(!fs.existsSync(FIREFOX)||!fs.existsSync(CHROMIUM)){console.log(`SKIP: Firefox/Chromium not found (PORTAGE_TEST_FIREFOX=${FIREFOX}, PORTAGE_TEST_CHROMIUM=${CHROMIUM})`);return;}
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'portage-cross-browser-'));
   const fx=path.join(dir,'firefox-profile'), chrome=path.join(dir,'chrome-profile');
   fs.mkdirSync(fx);let requests=0;

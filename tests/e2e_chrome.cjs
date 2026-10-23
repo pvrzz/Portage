@@ -42,7 +42,34 @@ async function main() {
     ],()=>{}), '127.0.0.1');
     assert.equal(cookie.imported,1,JSON.stringify(cookie));
     assert.equal((await page.cookies()).find(c=>c.name==='portage-test')?.value,'synthetic');
-    console.log(`PASS actual Chrome ${await browser.version()}: synthetic cookie imported`);
+    // The dashboard must also *collect* partitioned (CHIPS) cookies; Chrome's
+    // getAllCookieStores()/getAll() omit them unless partitionKey is requested.
+    const collected = await ext.evaluate(async () => {
+      await chrome.cookies.set({url:'https://example.com/',name:'portage-partitioned',value:'p',
+        secure:true,sameSite:'no_restriction',partitionKey:{topLevelSite:'https://example.com'}});
+      const result = await collectCookies();
+      const partitioned = result.data.find((entry) => entry.name === 'portage-partitioned');
+      return {count: result.count, partitionKey: partitioned?.partitionKey || null};
+    });
+    assert.equal(collected.partitionKey?.topLevelSite, 'https://example.com',
+      'collectCookies() must include partitioned cookies');
+    assert(collected.count >= 2);
+    // Importing a partitioned cookie must preserve the top-level site and the
+    // third-party ancestor bit; dropping either moves it between partitions.
+    const importedPartition = await ext.evaluate(async () => {
+      const result = await importCookies([{
+        name:'portage-import-partitioned', value:'v', domain:'example.com', path:'/', hostOnly:true,
+        secure:true, sameSite:'no_restriction',
+        partitionKey:{topLevelSite:'https://example.com', hasCrossSiteAncestor:true},
+      }], () => {});
+      const cookies = await chrome.cookies.getAll({partitionKey:{}});
+      const found = cookies.find((entry) => entry.name === 'portage-import-partitioned');
+      return {result, partitionKey: found?.partitionKey || null};
+    });
+    assert.equal(importedPartition.result.imported, 1);
+    assert.equal(importedPartition.partitionKey?.topLevelSite, 'https://example.com');
+    assert.equal(importedPartition.partitionKey?.hasCrossSiteAncestor, true);
+    console.log(`PASS actual Chrome ${await browser.version()}: cookie import/collect, partitioning and ancestor bit`);
   } finally {
     if(browser) await browser.close();
     await new Promise(resolve=>server.close(resolve));

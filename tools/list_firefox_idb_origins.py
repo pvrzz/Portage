@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -12,7 +13,7 @@ def list_origins(profile):
     if not db.is_file():
         raise FileNotFoundError(f'Missing Firefox QuotaManager storage.sqlite: {db}')
     result = []
-    with sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, timeout=5) as connection:
+    with closing(sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
         for origin, usage in connection.execute('SELECT origin, client_usages FROM origin'):
             if not origin or '^' in origin or not isinstance(usage, str) or 'I' not in usage:
                 continue  # no privileged schemes or origin-attribute partition flattening

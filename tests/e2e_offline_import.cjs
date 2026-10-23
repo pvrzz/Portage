@@ -16,11 +16,14 @@ async function main() {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'portage-offline-e2e-'));
   const profile=path.join(dir,'profile');
   const origin=`http://127.0.0.1:${server.address().port}`;
-  const bundle={portage:{format:'portage-bundle',version:1,source:'firefox'},data:{localStorage:[{origin,items:{token:'synthetic-value',a:'猫'}}]}};
+  // A __proto__ key must survive as ordinary localStorage data, not mutate the
+  // bundle object. JSON.parse (unlike an object literal) creates an own property.
+  const items=JSON.parse('{"token":"synthetic-value","a":"猫","__proto__":"proto-value"}');
+  const bundle={portage:{format:'portage-bundle',version:1,source:'firefox'},data:{localStorage:[{origin,items}]}};
   const file=path.join(dir,'synthetic.portage.json');
   fs.writeFileSync(file,JSON.stringify(bundle),{mode:0o600});
   try {
-    assert.equal(validateBundle(bundle).totalKeys,2);
+    assert.equal(validateBundle(bundle).totalKeys,3);
     await run({bundle:file, userDataDir:profile, browser:CHROMIUM, profileDirectory:'Default', timeout:12000, apply:true});
     assert.equal(hits,0,'Importer must NOT send a single request to the origin');
     const browser=await puppeteer.launch({executablePath:CHROMIUM,headless:true,userDataDir:profile,args:['--no-sandbox','--disable-background-networking']});
@@ -29,6 +32,7 @@ async function main() {
       await page.goto(origin);
       assert.equal(await page.evaluate(()=>localStorage.getItem('token')),'synthetic-value');
       assert.equal(await page.evaluate(()=>localStorage.getItem('a')),'猫');
+      assert.equal(await page.evaluate(()=>localStorage.getItem('__proto__')),'proto-value');
     } finally {await browser.close();}
     console.log('PASS Chrome offline LocalStorage restore: zero origin requests during import; persistent after restart');
   } finally {

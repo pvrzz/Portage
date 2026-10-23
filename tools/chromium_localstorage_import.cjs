@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const readline = require('node:readline');
+const {assertSafeTargetProfile, assertChromiumClosed, chromiumLaunchProfileOptions} = require('./profile_safety.cjs');
 
 function parseArgs(argv) {
   const opts = {apply: false, profileDirectory: 'Default', timeout: 12000};
@@ -154,10 +155,8 @@ async function restoreSites(browser, sites, timeout=12000) {
 async function run(opts) {
   const bundle=await loadBundle(path.resolve(opts.bundle),opts.passphraseStdin);
   const {sites,totalKeys}=validateBundle(bundle);
-  const profile=path.resolve(opts.userDataDir);
-  if(profile==='/' || profile===require('node:os').homedir()) throw Error('Refusing to use root or home as Chrome user-data-dir');
-  const lock=path.join(profile,'SingletonLock');
-  if (fs.existsSync(lock) || fs.lstatSync(lock, {throwIfNoEntry:false})) throw Error('Browser profile appears to be in use (SingletonLock present); close browser and retry');
+  const profile=assertSafeTargetProfile(opts.userDataDir, 'Chromium user-data-dir');
+  assertChromiumClosed(profile);
   console.log(`Validated ${sites.length} origins / ${totalKeys} LocalStorage keys.`);
   const unsupportedIdb = bundle?.meta?.unsupported?.indexedDBOrigins;
   if (Number.isInteger(unsupportedIdb) && unsupportedIdb > 0) {
@@ -170,7 +169,7 @@ async function run(opts) {
   // Never start with a personal profile unless explicitly specified by the operator.
   // Keep Chrome sandbox enabled; do not pass --no-sandbox.
   const browser=await puppeteer.launch({executablePath:path.resolve(opts.browser),userDataDir:profile,
-    headless:true,defaultViewport:{width:600,height:400},
+    headless:true,defaultViewport:{width:600,height:400},...chromiumLaunchProfileOptions(profile),
     args:['--profile-directory='+opts.profileDirectory,'--no-first-run','--no-default-browser-check',
       '--disable-background-networking','--disable-sync','--disable-extensions','--disable-features=MediaRouter']});
   let result;

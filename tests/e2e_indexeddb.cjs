@@ -1,13 +1,15 @@
 'use strict';
 const CHROMIUM = process.env.PORTAGE_TEST_CHROMIUM || '/usr/bin/google-chrome';
+const FIREFOX = process.env.PORTAGE_TEST_FIREFOX || '/usr/local/bin/firefox';
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const http=require('node:http');
-const pp=require('../tools/node_modules/puppeteer-core');
+let pp; try { pp = require('../tools/node_modules/puppeteer-core'); } catch { pp = require('puppeteer'); }
 const {migrate,originsForFirefox,inertPage,navigateOffline,restoreOrigin}=require('../tools/indexeddb_migrate.cjs');
 async function main(){
+  if(!fs.existsSync(FIREFOX)||!fs.existsSync(CHROMIUM)){console.log(`SKIP: Firefox/Chromium not found (PORTAGE_TEST_FIREFOX=${FIREFOX}, PORTAGE_TEST_CHROMIUM=${CHROMIUM})`);return;}
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'portage-idb-test-'));
   const fx=path.join(scratch,'firefox'),chrome=path.join(scratch,'chrome');
   const hits=[0,0];
@@ -16,7 +18,7 @@ async function main(){
   const origins=servers.map(s=>`http://127.0.0.1:${s.address().port}`);
   let browser;
   try {
-    browser=await pp.launch({browser:'firefox',protocol:'webDriverBiDi',executablePath:'/usr/local/bin/firefox',userDataDir:fx,headless:true});
+    browser=await pp.launch({browser:'firefox',protocol:'webDriverBiDi',executablePath:FIREFOX,userDataDir:fx,headless:true});
     const page=await browser.newPage();
     for(const [n,origin] of origins.entries()) {
       await page.goto(origin);
@@ -48,7 +50,7 @@ async function main(){
     await browser.close();browser=null;
     assert.deepEqual(originsForFirefox(fx),[...origins].sort());
     const before=hits.slice();
-    const stats=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:'/usr/local/bin/firefox',chromium:CHROMIUM,apply:true,timeout:20000});
+    const stats=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:FIREFOX,chromium:CHROMIUM,apply:true,timeout:20000});
     assert.equal(stats.restored,2,JSON.stringify(stats));
     assert.deepEqual(hits,before,'IndexedDB migration must not access real origin');
     browser=await pp.launch({executablePath:CHROMIUM,userDataDir:chrome,headless:true,args:['--disable-background-networking']});
@@ -91,7 +93,7 @@ async function main(){
     await verify.close();await browser.close();browser=null;
     assert.deepEqual(hits,before,'No real site traffic including verification');
     // Re-running must never overwrite existing destination IndexedDB databases.
-    const repeated=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:'/usr/local/bin/firefox',chromium:CHROMIUM,apply:true,timeout:20000});
+    const repeated=await migrate({firefoxProfile:fx,chromiumProfile:chrome,firefox:FIREFOX,chromium:CHROMIUM,apply:true,timeout:20000});
     assert.equal(repeated.restored,0);assert.equal(repeated.skipped,2);
     process.exitCode=undefined;
     console.log('PASS: Firefox 159 -> Chrome 156 indexedDB: 2 origins, schema, indexes, rich values, no target-site traffic');

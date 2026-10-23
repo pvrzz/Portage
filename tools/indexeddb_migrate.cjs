@@ -10,6 +10,7 @@ const path = require('node:path');
 const os = require('node:os');
 const cp = require('node:child_process');
 const {validOrigin} = require('./chromium_localstorage_import.cjs');
+const {assertSafeTargetProfile, assertChromiumClosed, assertFirefoxClosed, chromiumLaunchProfileOptions} = require('./profile_safety.cjs');
 
 function options(argv) {
   const o={apply:false,timeout:20000};
@@ -17,11 +18,12 @@ function options(argv) {
     const a=argv[i];
     if(a==='--apply')o.apply=true;
     else if(a==='--help')o.help=true;
-    else if(['--firefox-profile','--chromium-profile','--firefox','--chromium'].includes(a)) {
-      o[{'--firefox-profile':'firefoxProfile','--chromium-profile':'chromiumProfile','--firefox':'firefox','--chromium':'chromium'}[a]]=argv[++i];
+    else if(['--firefox-profile','--chromium-profile','--firefox','--chromium','--chromium-profile-directory'].includes(a)) {
+      o[{'--firefox-profile':'firefoxProfile','--chromium-profile':'chromiumProfile','--firefox':'firefox','--chromium':'chromium','--chromium-profile-directory':'chromiumProfileDirectory'}[a]]=argv[++i];
     }else throw Error('Unknown option: '+a);
   }
   if(!o.help && (!o.firefoxProfile||!o.chromiumProfile||!o.firefox||!o.chromium))throw Error('Required: --firefox-profile --chromium-profile --firefox --chromium');
+  if(o.chromiumProfileDirectory&&(!/^[\w. -]+$/.test(o.chromiumProfileDirectory)||o.chromiumProfileDirectory==='.'||o.chromiumProfileDirectory==='..'))throw Error('Invalid Chromium profile directory name');
   return o;
 }
 
@@ -165,24 +167,51 @@ async function restoreOrigin(page,source) {
   },{source});
 }
 
+const cleanupState = {paths: [], browsers: []};
+function cleanupSensitiveState() {
+  for (const browser of cleanupState.browsers) {
+    try { browser.process?.()?.kill?.('SIGKILL'); } catch {}
+  }
+  for (const target of cleanupState.paths) {
+    try { fs.rmSync(target, {recursive: true, force: true}); } catch {}
+  }
+  cleanupState.paths.length = 0;
+  cleanupState.browsers.length = 0;
+}
+function installCleanupHandlers() {
+  // Ctrl-C or SIGTERM must not leave the temporary Firefox profile clone (which
+  // contains cookies and storage data) behind in /tmp.
+  const handler = (signal) => { cleanupSensitiveState(); process.exit(signal === 'SIGINT' ? 130 : 143); };
+  process.once('SIGINT', handler);
+  process.once('SIGTERM', handler);
+  return () => { process.removeListener('SIGINT', handler); process.removeListener('SIGTERM', handler); };
+}
+
+function realDirectory(directory, label) {
+  if(!fs.existsSync(directory))throw Error(`${label} does not exist: ${directory}`);
+  const resolved=fs.realpathSync(directory);
+  if(!fs.statSync(resolved).isDirectory())throw Error(`${label} is not a directory: ${resolved}`);
+  return resolved;
+}
+
 async function migrate(opts) {
-  const fx=path.resolve(opts.firefoxProfile),target=path.resolve(opts.chromiumProfile);
-  if(!fs.statSync(fx).isDirectory())throw Error('Firefox source profile is not a directory');
-  if(target===fx || fx==='/' || target==='/' || target===os.homedir())throw Error('Unsafe profile directory');
+  // Resolve symlinks: cp -a would otherwise copy a symlink of the source
+  // profile and Firefox would be launched against the original profile.
+  const fx=realDirectory(opts.firefoxProfile, 'Firefox source profile');
+  const targetCandidate=path.resolve(opts.chromiumProfile);
+  const target=fs.existsSync(targetCandidate)?fs.realpathSync(targetCandidate):targetCandidate;
+  if(target===fx)throw Error('Source and destination profiles must differ');
+  assertSafeTargetProfile(target, 'Chromium user-data-dir');
+  assertFirefoxClosed(fx);
   const origins=originsForFirefox(fx);
   console.log(`Firefox IndexedDB inventory: ${origins.length} first-party origin(s); container/partitioned origins intentionally excluded.`);
   if(!opts.apply){console.log('DRY RUN: No browser started. Add --apply to migrate to a backed-up target profile.');return {origins:origins.length};}
-  if(fs.existsSync(path.join(target,'SingletonLock')))throw Error('Target Chromium profile appears to be open');
-  // On Linux the .parentlock file may exist after Firefox exits, so test
-  // whether any process actually has the file open rather than its existence.
-  const sourceLock=path.join(fx,'.parentlock');
-  if(fs.existsSync(sourceLock)) {
-    const locked=cp.spawnSync('fuser',['-s',sourceLock],{timeout:3000,stdio:'ignore'});
-    if(locked.status===0)throw Error('Firefox source profile is running; close Firefox before migration');
-  }
+  assertChromiumClosed(target);
   for(const exe of [opts.firefox,opts.chromium])if(!fs.existsSync(exe))throw Error('Executable not found: '+exe);
   const scratch=fs.mkdtempSync(path.join(os.tmpdir(),'portage-idb-'));
   fs.chmodSync(scratch,0o700);
+  cleanupState.paths.push(scratch);
+  const removeSignalHandlers = installCleanupHandlers();
   const clone=path.join(scratch,'firefox-clone');
   // Reflinks avoid copying large databases when the filesystem supports CoW.
   // Do NOT launch Firefox against the original profile, which would modify it.
@@ -199,9 +228,11 @@ async function migrate(opts) {
         'dom.serviceWorkers.enabled':false,
         'extensions.enabledScopes':0,
       }});
+    cleanupState.browsers.push(fb);
     cb=await pp.launch({browser:'chrome',executablePath:opts.chromium,
-      userDataDir:target,headless:true,timeout:20000,
-      args:['--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-sync','--disable-extensions']});
+      userDataDir:target,headless:true,timeout:20000,...chromiumLaunchProfileOptions(target),
+      args:['--profile-directory='+(opts.chromiumProfileDirectory||'Default'),'--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-sync','--disable-extensions']});
+    cleanupState.browsers.push(cb);
     const sourcePage=await inertPage(fb,'firefox'),destPage=await inertPage(cb,'chromium');
     for(const [i,origin]of origins.entries()){
       try {
@@ -221,7 +252,10 @@ async function migrate(opts) {
     // even if either browser fails to shut down cleanly.
     try {if(fb)await fb.close();} catch(e) {console.warn('Firefox close failed:',e.message);}
     try {if(cb)await cb.close();} catch(e) {console.warn('Chromium close failed:',e.message);}
+    cleanupState.browsers = cleanupState.browsers.filter(browser => browser !== fb && browser !== cb);
     fs.rmSync(scratch,{recursive:true,force:true});
+    cleanupState.paths = cleanupState.paths.filter(entry => entry !== scratch);
+    removeSignalHandlers();
   }
   console.log(`IndexedDB migration: ${stats.restored} database(s) restored; ${stats.skipped} target skips; ${stats.sourceSkipped} source skips.`);
   if(stats.errors.length)console.log('Failures (origin indices only, no contents):',JSON.stringify(stats.errors));
@@ -230,7 +264,7 @@ async function migrate(opts) {
 }
 if(require.main===module){
   try{const o=options(process.argv.slice(2));
-    if(o.help)console.log('Usage: node tools/indexeddb_migrate.cjs --firefox-profile PATH --chromium-profile PATH --firefox /usr/local/bin/firefox --chromium /usr/bin/google-chrome [--apply]\nDry-run by default. Use closed profiles; back up both before --apply. Existing target IndexedDB databases will be skipped.');
+    if(o.help)console.log('Usage: node tools/indexeddb_migrate.cjs --firefox-profile PATH --chromium-profile PATH --firefox /usr/local/bin/firefox --chromium /usr/bin/google-chrome [--apply]\nDry-run by default. Use closed profiles; back up both before --apply. Existing target IndexedDB databases will be skipped. [--chromium-profile-directory Default]');
     else migrate(o).catch(e=>{console.error('IndexedDB transfer failed:',e.message);process.exitCode=1});
   }catch(e){console.error(e.message);process.exitCode=1;}
 }

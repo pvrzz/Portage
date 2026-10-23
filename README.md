@@ -38,7 +38,7 @@ Passwords and autofill data are completely walled off from extension APIs. You w
 
 ## Privacy & Security Model
 
-* **Zero telemetry:** Everything runs entirely on your local machine. No network requests are ever made.
+* **Zero telemetry:** Everything runs entirely on your local machine. The extension makes no network requests. The experimental profile helpers in `tools/` also run locally, but they launch a browser and cannot guarantee zero browser background traffic (see the caveat in [tools/README.md](tools/README.md)).
 * **Memory only:** Portage holds your data in the active page's memory and wipes it completely as soon as you export, import, or close the tab.
 * **Handle with care:** Your export bundle contains live session cookies. Treat this file exactly like an exported password vault. Keep it local, import it, and delete it immediately.
 * **No deduplication:** Importing the exact same file twice will duplicate your history and cookies. Just run it once and verify.
@@ -66,8 +66,8 @@ Check the releases tab of the repo, or go to the website for Portage at: https:/
 
 ## Experimental: whole-profile Firefox LocalStorage transfer (Linux)
 
-Optional Python + Node helpers can migrate **all compatible first-party origins**, not just open tabs, to a closed Chrome/Brave profile. Export is encrypted by default; import uses intercepted inert responses rather than contacting websites. See the [step-by-step CLI and privacy limitations](tools/README.md). This does **not** include IndexedDB or guarantee login-session preservation.
+Optional Python + Node helpers can migrate **all compatible first-party origins**, not just open tabs, to a closed Chrome/Brave profile. Export is encrypted by default; import uses intercepted inert responses rather than contacting websites. See the [step-by-step CLI and privacy limitations](tools/README.md). Login-session preservation is **not guaranteed**: partitioned/container data is skipped and some sites re-authenticate for unrelated reasons. The offline cookie companion skips session and already-expired cookies.
 
 ### Experimental IndexedDB migration
 
-The Linux companion now also supports **first-party IndexedDB** for Firefox → Chromium. It recreates database schemas, indexes, keys and supported Structured Clone data using Firefox/Chromium browser APIs, without loading live sites. Existing target IndexedDB databases are skipped to prevent accidental overwrites. **Back up both profiles before using `--apply`.** See [tools/README.md](tools/README.md#indexeddb-migration-experimental-firefox--chromebrave) for instructions, compatibility limits and tests.
+The Linux companion also supports **first-party IndexedDB** for Firefox → Chromium. It recreates database schemas, indexes, keys and supported Structured Clone data using Firefox/Chromium browser APIs, without loading live sites. Existing target IndexedDB databases are skipped to prevent accidental overwrites. **Back up both profiles before using `--apply`.** See [tools/README.md](tools/README.md#indexeddb-migration-experimental-firefox--chromebrave) for instructions, compatibility limits and tests.

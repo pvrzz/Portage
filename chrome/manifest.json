@@ -13,9 +13,7 @@
     "management",
     "readingList"
   ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Portage",

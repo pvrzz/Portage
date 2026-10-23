@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -96,14 +97,76 @@ def decode_value(value, conversion_type, compression_type) -> str:
     raise ValueError(f'Unknown conversion type: {conversion_type}')
 
 
-def valid_origin(origin: str) -> bool:
+def normalize_origin(origin: str):
+    """Return the canonical origin Chromium's URL parser will accept.
+
+    Firefox stores origins in canonical form, but synthetic/corrupted profiles
+    may use uppercase hosts or an explicit default port. Emitting those would
+    make the JavaScript importer reject the whole bundle, so normalise here and
+    skip origins that cannot be represented safely.
+    """
     if not isinstance(origin, str) or '^' in origin or '#' in origin or '?' in origin:
-        return False  # no silent loss of Firefox origin attributes / partitions
+        return None  # no silent loss of Firefox origin attributes / partitions
     try:
         u = urlsplit(origin)
-        return u.scheme in ('https', 'http') and bool(u.hostname) and not u.username and not u.password and u.path in ('', '/')
+        port = u.port
+        host = u.hostname
     except ValueError:
+        return None
+    scheme = u.scheme.lower()
+    if scheme not in ('http', 'https') or not host or u.username or u.password or u.path not in ('', '/'):
+        return None
+    if any(ord(ch) > 127 for ch in host):
+        return None  # Firefox stores punycode; do not risk a WHATWG IDNA mismatch
+    if ':' in host:
+        host = f'[{host}]'
+    default_port = 443 if scheme == 'https' else 80
+    netloc = host if port is None or port == default_port else f'{host}:{port}'
+    return f'{scheme}://{netloc}'
+
+
+def valid_origin(origin: str) -> bool:
+    return normalize_origin(origin) is not None
+
+
+def firefox_profile_in_use(profile: Path) -> bool:
+    """Detect a Firefox process holding this profile's lock file open.
+
+    Existence of .parentlock is not enough because a crash can leave a stale
+    lock behind; /proc exposes the open descriptors of the running Firefox.
+    """
+    lock = profile / '.parentlock'
+    if not lock.exists():
         return False
+    try:
+        target = str(lock.resolve())
+    except OSError:
+        return False
+    proc = Path('/proc')
+    if proc.is_dir():
+        for pid in os.listdir(proc):
+            if not pid.isdigit():
+                continue
+            fd_dir = proc / pid / 'fd'
+            try:
+                descriptors = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for descriptor in descriptors:
+                try:
+                    linked = os.readlink(fd_dir / descriptor)
+                except OSError:
+                    continue
+                if linked == target or linked == target + ' (deleted)':
+                    return True
+        return False
+    try:
+        probe = subprocess.run(['fuser', '-s', str(lock)], capture_output=True, timeout=3)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError('Cannot verify that Firefox is closed (no /proc and no fuser)') from exc
+    if probe.returncode not in (0, 1):
+        raise RuntimeError('Cannot verify that Firefox is closed (fuser failed)')
+    return probe.returncode == 0
 
 
 def export_profile(profile: Path):
@@ -111,15 +174,20 @@ def export_profile(profile: Path):
     if not root.is_dir():
         raise ValueError('Expected Firefox profile with storage/default directory')
     sites, warnings = [], []
+    seen_origins = set()
     for db in sorted(root.glob('*/ls/data.sqlite')):
         try:
             # SQLite read-only URI avoids creating journal files or modifying profile.
             with closing(sqlite3.connect(db.as_uri() + '?mode=ro', uri=True, timeout=3)) as conn:
                 row = conn.execute('SELECT origin FROM "database" LIMIT 1').fetchone()
-                if not row or not valid_origin(row[0]):
+                origin = normalize_origin(row[0]) if row else None
+                if origin is None:
                     warnings.append('Skipped partitioned or invalid origin (name omitted for privacy)')
                     continue
-                origin = row[0].rstrip('/')
+                if origin in seen_origins:
+                    warnings.append('Skipped duplicate origin (name omitted for privacy)')
+                    continue
+                seen_origins.add(origin)
                 entries = conn.execute('SELECT key, value, conversion_type, compression_type FROM data').fetchall()
                 if not entries:
                     continue
@@ -142,11 +210,18 @@ def main(argv=None):
     parser.add_argument('--passphrase-stdin', action='store_true', help='Read encryption passphrase from stdin instead of prompting')
     args = parser.parse_args(argv)
     profile = args.profile.expanduser().resolve()
-    output = args.output.expanduser().resolve()
-    if output.exists():
+    # Do not resolve the output path: resolving a dangling symlink would write
+    # through it and defeat the no-clobber guarantee below.
+    output = args.output.expanduser()
+    if os.path.lexists(output):
         parser.error('Output already exists: will not overwrite sensitive data')
     if not profile.is_dir():
         parser.error('Profile directory does not exist')
+    try:
+        if firefox_profile_in_use(profile):
+            parser.error('Firefox appears to be running with this profile; close Firefox before exporting')
+    except RuntimeError as exc:
+        parser.error(str(exc))
     sites, warnings = export_profile(profile)
     # Inventory unsupported IndexedDB without opening or reading any IDB records.
     # Counts, not credential-bearing names/values, go into the bundle metadata.
@@ -192,8 +267,16 @@ def main(argv=None):
             },
             'ciphertext':base64.b64encode(ciphertext).decode(),
         }
-    # Create mode 0600: no permissive intermediate file, no clobber.
-    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # Create mode 0600: no permissive intermediate file, no clobber, and never
+    # follow a symlink (a dangling link would otherwise redirect the write).
+    try:
+        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except FileExistsError:
+        parser.error('Output already exists: will not overwrite sensitive data')
+    except FileNotFoundError:
+        parser.error(f'Output directory does not exist: {output.parent}')
+    except OSError as exc:
+        parser.error(f'Cannot create output file: {exc.strerror or exc}')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as out:
             json.dump(bundle, out, ensure_ascii=False, separators=(',', ':'))
