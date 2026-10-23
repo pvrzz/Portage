@@ -92,25 +92,36 @@ async function encode(value, seen = new WeakSet()) {
     const arr=[];for(const v of value)arr.push(await encode(v,seen));return {t:'set',v:arr};
   }
   // Structured-cloneable built-ins that are not plain objects.
+  if(typeof AggregateError!=='undefined' && value instanceof AggregateError){
+    const encoded={t:'aggregateerror',message:value.message,stack:value.stack,errors:[]};
+    for(const nested of value.errors) encoded.errors.push(await encode(nested,seen));
+    if(Object.prototype.hasOwnProperty.call(value,'cause')) encoded.cause=await encode(value.cause,seen);
+    return encoded;
+  }
   if(value instanceof Error){
     const encoded={t:'error',name:value.name,message:value.message,stack:value.stack};
     if(Object.prototype.hasOwnProperty.call(value,'cause')) encoded.cause=await encode(value.cause,seen);
     return encoded;
   }
-  const tag=Object.prototype.toString.call(value);
-  if(tag==='[object Number]')return {t:'numberobject',v:encodeNumber(value.valueOf())};
-  if(tag==='[object String]')return {t:'stringobject',v:value.valueOf()};
-  if(tag==='[object Boolean]')return {t:'booleanobject',v:value.valueOf()};
+  // Brand checks, not Object.prototype.toString sniffing: a site-controlled
+  // Symbol.toStringTag must not turn an ordinary object into a wrapper.
+  try{return {t:'numberobject',v:encodeNumber(Number.prototype.valueOf.call(value))};}catch{}
+  try{return {t:'stringobject',v:String.prototype.valueOf.call(value)};}catch{}
+  try{return {t:'booleanobject',v:Boolean.prototype.valueOf.call(value)};}catch{}
   if(typeof ImageData!=='undefined' && value instanceof ImageData){
     assertBinaryLimit(value.data.byteLength,'ImageData');
-    return {t:'imagedata',w:value.width,h:value.height,
+    return {t:'imagedata',w:value.width,h:value.height,cs:value.colorSpace,
       data:bytesToBase64(new Uint8Array(value.data.buffer,value.data.byteOffset,value.data.byteLength))};
   }
-  if(Object.getPrototypeOf(value)!==Object.prototype && Object.getPrototypeOf(value)!==null)
+  const prototype=Object.getPrototypeOf(value);
+  if(prototype!==Object.prototype && prototype!==null &&
+     Object.prototype.toString.call(value)!=='[object Object]')
     throw new Error('Unsupported IndexedDB object prototype');
+  // Ordinary class instances are structured-cloneable; the clone drops the
+  // prototype, so encode own enumerable properties as a plain object.
   const pairs=[];
   for (const k of Object.keys(value)) pairs.push([k,await encode(value[k],seen)]);
-  return {t:'object',plain:Object.getPrototypeOf(value)===Object.prototype,v:pairs};
+  return {t:'object',plain:prototype!==null,v:pairs};
 }
 
 function decode(o){
@@ -136,10 +147,18 @@ function decode(o){
     case 'blob':return new Blob([base64ToBytes(o.v)],{type:o.mime});
     case 'file':return new File([base64ToBytes(o.v)],o.name,{type:o.mime,lastModified:o.lastModified});
     case 'error': {
-      const types={Error,TypeError,RangeError,SyntaxError,ReferenceError,EvalError,URIError};
-      const Ctor=types[o.name]||Error;
+      const types=new Map([['Error',Error],['TypeError',TypeError],['RangeError',RangeError],
+        ['SyntaxError',SyntaxError],['ReferenceError',ReferenceError],['EvalError',EvalError],['URIError',URIError]]);
+      const Ctor=types.get(o.name)||Error;
       const error=new Ctor(o.message||'');
       if(o.name)error.name=o.name;
+      if(o.stack)error.stack=o.stack;
+      if('cause' in o)error.cause=decode(o.cause);
+      return error;
+    }
+    case 'aggregateerror': {
+      if(typeof AggregateError==='undefined')throw new Error('AggregateError is not supported in this browser');
+      const error=new AggregateError(o.errors.map(decode),o.message||'');
       if(o.stack)error.stack=o.stack;
       if('cause' in o)error.cause=decode(o.cause);
       return error;
@@ -149,7 +168,9 @@ function decode(o){
     case 'booleanobject':return new Boolean(o.v);
     case 'imagedata': {
       if(typeof ImageData==='undefined')throw new Error('ImageData is not supported in this browser');
-      return new ImageData(new Uint8ClampedArray(base64ToBytes(o.data)),o.w,o.h);
+      const data=new Uint8ClampedArray(base64ToBytes(o.data));
+      if(o.cs){try{return new ImageData(data,o.w,o.h,{colorSpace:o.cs});}catch{}}
+      return new ImageData(data,o.w,o.h);
     }
     case 'array': {
       const arr=new Array(o.v.length);

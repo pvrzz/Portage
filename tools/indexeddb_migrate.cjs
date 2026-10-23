@@ -71,7 +71,7 @@ async function snapshotOrigin(page) {
     const {encode}=globalThis.PortageIDBCodec;
     const output={databases:[],errors:[]};
     const metas=await indexedDB.databases();
-    for(const meta of metas) {
+    for(const [dbIndex, meta] of metas.entries()) {
       if(typeof meta.name!=='string')continue;
       let db;
       try {
@@ -115,7 +115,7 @@ async function snapshotOrigin(page) {
         if(JSON.stringify(dump).length>32*1024*1024)throw Error('Database over 32 MiB transport limit');
         if(JSON.stringify(output).length+JSON.stringify(dump).length>64*1024*1024)throw Error('Origin over 64 MiB transport limit');
         output.databases.push(dump);
-      }catch(e){output.errors.push('Database '+output.databases.length+' skipped: '+String(e.message||e).slice(0,160));}
+      }catch(e){output.errors.push('Database '+dbIndex+' skipped: '+String(e.message||e).slice(0,160));}
       finally {db?.close();}
     }
     return output;
@@ -125,10 +125,46 @@ async function snapshotOrigin(page) {
 async function restoreOrigin(page,source) {
   return page.evaluate(async ({source})=>{
     const {decode}=globalThis.PortageIDBCodec;
-    const results={restored:0,skipped:0,errors:[]};
+    const results={restored:0,skipped:0,retried:0,errors:[]};
     const existing=new Set((await indexedDB.databases()).map(x=>x.name));
+    const deleteDatabase=name=>new Promise((resolve,reject)=>{
+      const request=indexedDB.deleteDatabase(name);
+      request.onsuccess=()=>resolve();
+      request.onerror=()=>reject(request.error||Error('DB deletion failed'));
+      request.onblocked=()=>reject(Error('DB deletion blocked'));
+    });
+    const openExisting=name=>new Promise((resolve,reject)=>{
+      const request=indexedDB.open(name);
+      request.onsuccess=()=>resolve(request.result);
+      request.onerror=()=>reject(request.error||Error('DB open failed'));
+      request.onblocked=()=>reject(Error('DB open blocked'));
+    });
     for(const spec of source.databases) {
-      if(existing.has(spec.name)) {results.skipped++;continue;}
+      let needsRestore=true;
+      if(existing.has(spec.name)) {
+        let previous=null;
+        try {
+          previous=await openExisting(spec.name);
+          const storeCount=previous.objectStoreNames.length;
+          previous.close();previous=null;
+          if(storeCount===0 && spec.stores.length>0) {
+            // An interrupted upgrade can leave an empty version-1 container
+            // with no object stores. Treat it as an incomplete attempt, remove
+            // it, and retry instead of skipping the origin forever.
+            await deleteDatabase(spec.name);
+            results.retried++;
+          } else {
+            results.skipped++;
+            needsRestore=false;
+          }
+        }catch(e){
+          if(previous)previous.close();
+          results.skipped++;
+          results.errors.push(String(e.message||e).slice(0,160));
+          needsRestore=false;
+        }
+      }
+      if(!needsRestore)continue;
       let db;
       let created=false;
       let failure=null;
@@ -172,11 +208,8 @@ async function restoreOrigin(page,source) {
         // delete a target database when validation failed before creation.
         if(db){db.close();db=null;}
         if(created){
-          try{await new Promise((resolve,reject)=>{
-            const q=indexedDB.deleteDatabase(spec.name);
-            q.onsuccess=()=>resolve();q.onerror=()=>reject(q.error);
-            q.onblocked=()=>reject(Error('DB deletion blocked'));
-          });}catch{results.errors.push('Partial database cleanup failed; inspect target profile');}
+          try{await deleteDatabase(spec.name);}
+          catch{results.errors.push('Partial database cleanup failed; inspect target profile');}
         }
       }finally {db?.close();}
     }
@@ -231,7 +264,7 @@ async function migrate(opts) {
   const clone=path.join(scratch,'firefox-clone');
   // Reflinks avoid copying large databases when the filesystem supports CoW.
   // Do NOT launch Firefox against the original profile, which would modify it.
-  let fb,cb;const stats={origins:origins.length,restored:0,skipped:0,sourceSkipped:0,errors:[]};
+  let fb,cb;const stats={origins:origins.length,restored:0,skipped:0,retried:0,sourceSkipped:0,errors:[]};
   try {
     cloneFirefoxProfile(fx,clone);
     const pp=require('puppeteer-core');
@@ -258,7 +291,7 @@ async function migrate(opts) {
         if(!exported.databases.length)continue;
         await navigateOffline(destPage,origin,opts.timeout);
         const result=await withTimeout(restoreOrigin(destPage,exported),120000,'IndexedDB restore');
-        stats.restored+=result.restored;stats.skipped+=result.skipped;
+        stats.restored+=result.restored;stats.skipped+=result.skipped;stats.retried+=result.retried||0;
         if(result.errors.length)stats.errors.push({originIndex:i+1,reason:'Target database skipped or unsupported'});
       }catch(e){stats.skipped++;stats.errors.push({originIndex:i+1,reason:String(e.message||e).slice(0,150)});if(String(e.message||'').includes('timed out'))throw e;}
     }
@@ -273,7 +306,7 @@ async function migrate(opts) {
     cleanupState.paths = cleanupState.paths.filter(entry => entry !== scratch);
     removeSignalHandlers();
   }
-  console.log(`IndexedDB migration: ${stats.restored} database(s) restored; ${stats.skipped} target skips; ${stats.sourceSkipped} source skips.`);
+  console.log(`IndexedDB migration: ${stats.restored} database(s) restored; ${stats.retried} interrupted database(s) retried; ${stats.skipped} target skips; ${stats.sourceSkipped} source skips.`);
   if(stats.errors.length)console.log('Failures (origin indices only, no contents):',JSON.stringify(stats.errors));
   // Existing destination databases are intentionally skipped, so only real
   // source/restore errors make the command exit non-zero.

@@ -112,6 +112,27 @@ async function main(){
       const afterInvalid=await verify.evaluate(()=>indexedDB.databases());
       assert(!afterInvalid.some(x=>x.name==='portage-invalid-record-test'),
         'Aborted restore must not leave a schema-only database');
+      // An interrupted upgrade can leave an empty version-1 database. The next
+      // run must detect that (no object stores) and retry it instead of
+      // reporting a permanent skip.
+      await verify.evaluate(()=>new Promise((ok,no)=>{
+        const r=indexedDB.open('portage-interrupted-test',1);
+        r.onsuccess=()=>{r.result.close();ok();};r.onerror=()=>no(r.error);
+      }));
+      const recovered=await restoreOrigin(verify,{databases:[{
+        name:'portage-interrupted-test',version:1,stores:[{
+          name:'data',keyPath:null,autoIncrement:false,indexes:[],
+          records:[[{t:'string',v:'k'},{t:'string',v:'v'}]]
+        }]
+      }]});
+      assert.equal(recovered.restored,1,JSON.stringify(recovered));
+      assert.equal(recovered.retried,1);
+      const recoveredValue=await verify.evaluate(async()=>{
+        const db=await new Promise((ok,no)=>{const r=indexedDB.open('portage-interrupted-test');r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)});
+        const value=await new Promise((ok,no)=>{const q=db.transaction('data','readonly').objectStore('data').get('k');q.onsuccess=()=>ok(q.result);q.onerror=()=>no(q.error)});
+        db.close();return value;
+      });
+      assert.equal(recoveredValue,'v');
     }
     await verify.close();await browser.close();browser=null;
     assert.deepEqual(hits,before,'No real site traffic including verification');

@@ -31,6 +31,27 @@ const {encode,decode}=require('../tools/indexeddb_codec.js');
   assert(decode(JSON.parse(JSON.stringify(await encode(Object(42))))) instanceof Number);
   assert.equal(decode(JSON.parse(JSON.stringify(await encode(Object('x'))))).valueOf(),'x');
   assert.equal(decode(JSON.parse(JSON.stringify(await encode(Object(false))))).valueOf(),false);
+  // Site-controlled Error.name must not be used as a plain-object key.
+  for(const name of ['constructor','__proto__','toString']){
+    const named=new Error('named');named.name=name;
+    const restored=decode(JSON.parse(JSON.stringify(await encode(named))));
+    assert(restored instanceof Error,name);
+    assert.equal(restored.message,'named');
+  }
+  if(typeof AggregateError!=='undefined'){
+    const aggregate=new AggregateError([new TypeError('first'),new Error('second')],'many');
+    const restored=decode(JSON.parse(JSON.stringify(await encode(aggregate))));
+    assert(restored instanceof AggregateError);
+    assert.equal(restored.message,'many');
+    assert.deepEqual(restored.errors.map((error)=>error.message),['first','second']);
+  }
+  // Symbol.toStringTag spoofing must not turn a plain object into a wrapper.
+  class Spoofed{constructor(){this.x=1;}get [Symbol.toStringTag](){return 'Number';}valueOf(){return 7;}}
+  await assert.rejects(()=>encode(new Spoofed()),/Unsupported IndexedDB object prototype/);
+  class Plainish{constructor(){this.x=1;}}
+  const plainish=decode(JSON.parse(JSON.stringify(await encode(new Plainish()))));
+  assert.equal(plainish.x,1);
+  assert.equal(Object.getPrototypeOf(plainish),Object.prototype);
 
   // Typed arrays carry the source byte order; decoding the same big-endian
   // payload on a little-endian host must still produce the original values.
