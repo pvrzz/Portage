@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+*.portage.json
+tools/node_modules/
