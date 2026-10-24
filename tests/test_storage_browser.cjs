@@ -84,7 +84,8 @@ async function main() {
     assert.deepEqual(names, firefox ? ['plain', 'partitioned', 'fpi'] : ['plain', 'partitioned']);
     for (const details of written) assert.equal(details.storeId, defaultStoreId);
     assert.equal('sameSite' in written[0], false, 'unspecified must omit the attribute');
-    assert.equal(written.find((details) => details.name === 'partitioned').partitionKey.hasCrossSiteAncestor, true);
+    assert.equal(written.find((details) => details.name === 'partitioned').partitionKey.hasCrossSiteAncestor, firefox ? undefined : true,
+      'Firefox 115-140 rejects hasCrossSiteAncestor; Chrome keeps it');
     if (firefox) {
       assert.equal(written[0].firstPartyDomain, '');
       assert.equal(written.find((details) => details.name === 'fpi').firstPartyDomain, 'example.com');

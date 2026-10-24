@@ -254,7 +254,9 @@ async function importCookies(items, onProg) {
         d.partitionKey = { topLevelSite: c.partitionKey.topLevelSite };
         // The ancestor bit changes which embedding contexts can read it;
         // dropping it would move third-party cookies between partitions.
-        if (typeof c.partitionKey.hasCrossSiteAncestor === "boolean") {
+        // Firefox's schema (115-140 ESR) has no hasCrossSiteAncestor and
+        // rejects unknown properties, so only Chrome gets it.
+        if (!IS_FIREFOX && typeof c.partitionKey.hasCrossSiteAncestor === "boolean") {
           d.partitionKey.hasCrossSiteAncestor = c.partitionKey.hasCrossSiteAncestor;
         }
       }
@@ -421,7 +423,7 @@ function buildBundle() {
     const st = exState[id];
     if (st.selected && st.data != null) { data[id] = st.data; counts[id] = st.count; }
   }
-  return { portage: { format: "portage-bundle", version: 1, source: SOURCE, generator: `Portage ${SOURCE_LABEL} 2.0.0`, exportedAt: new Date().toISOString(), userAgent: navigator.userAgent }, meta: { counts }, data };
+  return { portage: { format: "portage-bundle", version: 1, source: SOURCE, generator: `Portage ${SOURCE_LABEL} 2.1.0`, exportedAt: new Date().toISOString(), userAgent: navigator.userAgent }, meta: { counts }, data };
 }
 
 function updateExportTotals() {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Portage",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Universal browser data swap. Export bookmarks, history, cookies, tabs and sessions to a portable JSON bundle, then import into any browser running Portage — Firefox to Chrome, or the same browser on a new machine. Also exports your add-on list as a reinstall checklist.",
   "homepage_url": "https://github.com/pvrzz/Portage/",
   "browser_specific_settings": {
