@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Portage",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Export bookmarks, history, cookies, tabs, sessions, and reading list to a portable JSON file. Import on any browser.",
   "homepage_url": "https://github.com/pvrzz/Portage/",
   "permissions": [

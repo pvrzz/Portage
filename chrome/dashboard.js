@@ -446,7 +446,7 @@ function buildBundle() {
     const st = exState[id];
     if (st.selected && st.data != null) { data[id] = st.data; counts[id] = st.count; }
   }
-  return { portage: { format: "portage-bundle", version: 1, source: SOURCE, generator: `Portage ${SOURCE_LABEL} 2.1.0`, exportedAt: new Date().toISOString(), userAgent: navigator.userAgent }, meta: { counts }, data };
+  return { portage: { format: "portage-bundle", version: 1, source: SOURCE, generator: `Portage ${SOURCE_LABEL} 2.1.1`, exportedAt: new Date().toISOString(), userAgent: navigator.userAgent }, meta: { counts }, data };
 }
 
 function updateExportTotals() {
