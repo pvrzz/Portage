@@ -28,7 +28,30 @@ const SVG = {
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
 };
-const iconSvg = (i) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${i}</svg>`;
+// Icons are the fixed SVG snippets above, parsed as SVG (never page or bundle data).
+const SVG_NS = "http://www.w3.org/2000/svg";
+function iconEl(i) {
+  const doc = new DOMParser().parseFromString(`<svg xmlns="${SVG_NS}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${i}</svg>`, "image/svg+xml");
+  return document.importNode(doc.documentElement, true);
+}
+// Builds an element: props become attributes (true = present, false/null = absent),
+// children are nodes or strings (always inserted as text).
+function h(tag, props = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else el.setAttribute(k, v === true ? "" : String(v));
+  }
+  el.append(...children.flat().filter((c) => c != null && c !== false));
+  return el;
+}
+// Swaps a button's contents for a spinner and label; returns a function that restores them.
+function busy(btn, label) {
+  const orig = [...btn.childNodes];
+  btn.replaceChildren(h("span", { class: "spinner" }), " " + label);
+  return () => btn.replaceChildren(...orig);
+}
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const IMPORTABLE = /^(https?|ftp):/i;
 
@@ -54,7 +77,6 @@ function countBookmarks(tree) {
 function countSessions(list) {
   let n = 0; for (const s of list) n += s.type === "window" ? (s.tabs?.length || 0) : 1; return n;
 }
-function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m])); }
 function extensionsTxt(list) {
   const L = [];
   L.push("Portage — extension reinstall checklist");
@@ -77,10 +99,7 @@ function toast(msg, icon) {
   const wrap = document.getElementById("toasts");
   const el = document.createElement("div");
   el.className = "toast";
-  el.innerHTML = iconSvg(SVG[icon] || SVG.check);
-  const span = document.createElement("span");
-  span.textContent = msg;
-  el.appendChild(span);
+  el.append(iconEl(SVG[icon] || SVG.check), h("span", {}, msg));
   wrap.appendChild(el);
   setTimeout(() => { el.style.transition = "opacity .3s, transform .3s"; el.style.opacity = "0"; el.style.transform = "translateX(20px)"; }, 3400);
   setTimeout(() => el.remove(), 3800);
@@ -332,24 +351,24 @@ function makeCard(id, c, opts) {
   const el = document.createElement("div");
   el.className = "card";
   el.dataset.id = id;
-  el.innerHTML = `
-    <div class="card-toggle">
-      <label class="switch" title="Include"><input type="checkbox" data-toggle="${id}" ${opts.checked ? "checked" : ""} ${opts.toggleDisabled ? "disabled" : ""}><span class="track"></span></label>
-    </div>
-    <div class="card-top">
-      <div class="card-icon">${iconSvg(c.icon)}</div>
-      <div class="card-title"><h3>${c.label}</h3><div class="desc">${opts.desc}</div></div>
-    </div>
-    <div class="card-count"><span class="n" data-n="${id}">${opts.count ?? 0}</span><span class="u">${c.unit}</span></div>
-    <div class="card-bar"><i data-bar="${id}"></i></div>
-    <div class="card-state"><span class="dot ${opts.dot}" data-dot="${id}"></span><span data-msg="${id}">${opts.msg}</span></div>
-    <div class="card-state">${iconSvg(SVG.arrow)}<span class="muted">${opts.fx}</span></div>
-    <div data-extra="${id}"></div>`;
+  el.append(
+    h("div", { class: "card-toggle" },
+      h("label", { class: "switch", title: "Include" },
+        h("input", { type: "checkbox", "data-toggle": id, checked: opts.checked, disabled: opts.toggleDisabled }),
+        h("span", { class: "track" }))),
+    h("div", { class: "card-top" },
+      h("div", { class: "card-icon" }, iconEl(c.icon)),
+      h("div", { class: "card-title" }, h("h3", {}, c.label), h("div", { class: "desc" }, opts.desc))),
+    h("div", { class: "card-count" }, h("span", { class: "n", "data-n": id }, String(opts.count ?? 0)), h("span", { class: "u" }, c.unit)),
+    h("div", { class: "card-bar" }, h("i", { "data-bar": id })),
+    h("div", { class: "card-state" }, h("span", { class: "dot " + opts.dot, "data-dot": id }), h("span", { "data-msg": id }, opts.msg)),
+    h("div", { class: "card-state" }, iconEl(SVG.arrow), h("span", { class: "muted" }, opts.fx)),
+    h("div", { "data-extra": id }));
   return el;
 }
 
 function renderExportCards() {
-  exGrid.innerHTML = "";
+  exGrid.replaceChildren();
   exportCategoryIds().forEach((id, idx) => {
     const c = CATS[id];
     exState[id] = { data: null, count: 0, selected: true, status: "idle" };
@@ -413,7 +432,8 @@ async function scanAll() {
 
 function addExtTxtButton(id, list) {
   const slot = document.querySelector(`[data-extra="${id}"]`);
-  slot.innerHTML = `<div class="ext-actions"><button class="btn btn-ghost" id="extTxtNow">${iconSvg(SVG.download)} Save list (.txt)</button></div>`;
+  slot.replaceChildren(h("div", { class: "ext-actions" },
+    h("button", { class: "btn btn-ghost", id: "extTxtNow" }, iconEl(SVG.download), " Save list (.txt)")));
   document.getElementById("extTxtNow").addEventListener("click", () => {
     saveFile(`portage-${SOURCE}-extensions-${stamp()}.txt`, extensionsTxt(list), "text/plain");
     toast("Extension checklist saved", "download");
@@ -452,7 +472,7 @@ function clearScannedData() {
     const n = document.querySelector(`[data-n="${id}"]`); if (n) n.textContent = "0";
     const cb = document.querySelector(`[data-toggle="${id}"]`); if (cb) { cb.checked = false; cb.disabled = true; }
     const card = document.querySelector(`.card[data-id="${id}"]`); if (card) card.classList.add("disabled");
-    const extra = document.querySelector(`[data-extra="${id}"]`); if (extra) extra.innerHTML = "";
+    const extra = document.querySelector(`[data-extra="${id}"]`); if (extra) extra.replaceChildren();
   }
   scanned = false;
   document.getElementById("scanLabel").textContent = `Scan ${SOURCE_LABEL}`;
@@ -469,8 +489,8 @@ async function exportBundle() {
     if (pass.length < 6) { toast("Use a longer passphrase (6+ characters)", "lock"); return; }
     if (pass !== pass2) { toast("Passphrases don't match", "lock"); document.getElementById("encPass2").focus(); return; }
   }
-  const btn = document.getElementById("export"); const orig = btn.innerHTML;
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> ' + (encOn ? "Encrypting…" : "Building…");
+  const btn = document.getElementById("export");
+  btn.disabled = true; const restore = busy(btn, encOn ? "Encrypting…" : "Building…");
   let ok = false, extra = "";
   try {
     const obj = buildBundle();
@@ -483,7 +503,7 @@ async function exportBundle() {
     }
     ok = true;
   } catch (err) { toast("Export failed: " + err.message, "lock"); }
-  btn.innerHTML = orig;
+  restore();
   if (ok) {
     document.getElementById("encPass").value = ""; document.getElementById("encPass2").value = "";
     document.getElementById("encStrengthBar").style.width = "0%"; document.getElementById("encStrengthLabel").textContent = "—";
@@ -534,21 +554,17 @@ function openDecryptModal(wrapper) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   const src = (wrapper.portage.source || "another browser").replace(/^./, (m) => m.toUpperCase());
-  overlay.innerHTML = `
-    <div class="modal" role="dialog" aria-modal="true">
-      <div class="modal-icon">${iconSvg(SVG.lock)}</div>
-      <h3>Encrypted bundle</h3>
-      <p>This bundle from ${escapeHtml(src)} is encrypted with AES-256. Enter the passphrase to open it.</p>
-      <div class="pass-row">
-        <input class="input" type="password" id="decPass" placeholder="Passphrase" autocomplete="off" spellcheck="false">
-        <button class="reveal" id="decReveal" type="button" aria-label="Show or hide">${iconSvg(SVG.eye)}</button>
-      </div>
-      <div class="err" id="decErr">Incorrect passphrase — try again.</div>
-      <div class="modal-actions">
-        <button class="btn btn-ghost" id="decCancel">Cancel</button>
-        <button class="btn btn-primary" id="decGo">Decrypt &amp; open</button>
-      </div>
-    </div>`;
+  overlay.append(h("div", { class: "modal", role: "dialog", "aria-modal": "true" },
+    h("div", { class: "modal-icon" }, iconEl(SVG.lock)),
+    h("h3", {}, "Encrypted bundle"),
+    h("p", {}, `This bundle from ${src} is encrypted with AES-256. Enter the passphrase to open it.`),
+    h("div", { class: "pass-row" },
+      h("input", { class: "input", type: "password", id: "decPass", placeholder: "Passphrase", autocomplete: "off", spellcheck: "false" }),
+      h("button", { class: "reveal", id: "decReveal", type: "button", "aria-label": "Show or hide" }, iconEl(SVG.eye))),
+    h("div", { class: "err", id: "decErr" }, "Incorrect passphrase — try again."),
+    h("div", { class: "modal-actions" },
+      h("button", { class: "btn btn-ghost", id: "decCancel" }, "Cancel"),
+      h("button", { class: "btn btn-primary", id: "decGo" }, "Decrypt & open"))));
   document.body.appendChild(overlay);
   const input = overlay.querySelector("#decPass");
   const err = overlay.querySelector("#decErr");
@@ -560,11 +576,11 @@ function openDecryptModal(wrapper) {
   async function attempt() {
     if (!input.value) return;
     err.classList.remove("show");
-    go.disabled = true; const orig = go.innerHTML; go.innerHTML = '<span class="spinner"></span> Decrypting…';
+    go.disabled = true; const restore = busy(go, "Decrypting…");
     try {
       bundle = await decryptBundle(wrapper, input.value);
       overlay.remove(); showReview(); toast("Bundle decrypted — review and import", "check");
-    } catch { go.disabled = false; go.innerHTML = orig; err.classList.add("show"); input.select(); }
+    } catch { go.disabled = false; restore(); err.classList.add("show"); input.select(); }
   }
   go.addEventListener("click", attempt);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") attempt(); });
@@ -577,7 +593,7 @@ function showReview() {
   document.getElementById("bundleTitle").textContent = `Bundle from ${(p.source || "?").replace(/^./, (m) => m.toUpperCase())}`;
   document.getElementById("bundleMeta").textContent = `exported ${new Date(p.exportedAt).toLocaleString()} · ${p.generator || "Portage"}`;
 
-  imGrid.innerHTML = ""; let totalItems = 0;
+  imGrid.replaceChildren(); let totalItems = 0;
   ORDER.forEach((id, idx) => {
     const c = CATS[id]; const data = bundle.data?.[id];
     const present = Array.isArray(data) ? data.length > 0 : !!data;
@@ -611,15 +627,14 @@ function renderExtList(id, list) {
   const card = imGrid.querySelector(`.card[data-id="${id}"]`);
   card.classList.add("wide");
   const slot = card.querySelector(`[data-extra="${id}"]`);
-  const rows = list.map((e, i) => `
-    <div class="ext-row"><span class="idx">${i + 1}</span>
-      <span style="flex:1"><span class="nm">${escapeHtml(e.name)}</span> <span class="ver">v${escapeHtml(e.version || "?")}</span></span>
-      <a href="https://addons.mozilla.org/firefox/search/?q=${encodeURIComponent(e.name)}" target="_blank" rel="noopener">Firefox</a>
-      <a href="https://chromewebstore.google.com/search/${encodeURIComponent(e.name)}" target="_blank" rel="noopener">Chrome</a>
-    </div>`).join("");
-  slot.innerHTML = `
-    <div class="ext-actions"><button class="btn btn-ghost" id="extTxtDl">${iconSvg(SVG.download)} Download checklist (.txt)</button></div>
-    <div class="ext-list">${rows}</div>`;
+  const rows = list.map((e, i) => h("div", { class: "ext-row" },
+    h("span", { class: "idx" }, String(i + 1)),
+    h("span", { style: "flex:1" }, h("span", { class: "nm" }, String(e.name)), " ", h("span", { class: "ver" }, "v" + (e.version || "?"))),
+    h("a", { href: `https://addons.mozilla.org/firefox/search/?q=${encodeURIComponent(e.name)}`, target: "_blank", rel: "noopener" }, "Firefox"),
+    h("a", { href: `https://chromewebstore.google.com/search/${encodeURIComponent(e.name)}`, target: "_blank", rel: "noopener" }, "Chrome")));
+  slot.replaceChildren(
+    h("div", { class: "ext-actions" }, h("button", { class: "btn btn-ghost", id: "extTxtDl" }, iconEl(SVG.download), " Download checklist (.txt)")),
+    h("div", { class: "ext-list" }, rows));
   document.getElementById("extTxtDl").addEventListener("click", () => {
     saveFile(`portage-extensions-${stamp()}.txt`, extensionsTxt(list), "text/plain");
     toast("Extension checklist saved", "download");
@@ -634,8 +649,8 @@ function updateImportTotals() {
 }
 
 async function runImport() {
-  const btn = document.getElementById("importBtn"); const orig = btn.innerHTML;
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Importing…';
+  const btn = document.getElementById("importBtn");
+  btn.disabled = true; const restore = busy(btn, "Importing…");
   document.getElementById("impbarWrap").classList.remove("hidden");
   const todo = ORDER.filter((id) => imState[id]?.selected && CATS[id].importRun);
   let imported = 0, skipped = 0, ci = 0;
@@ -657,7 +672,7 @@ async function runImport() {
   }
   bundle = null;
   document.getElementById("impStage").textContent = "Import complete · bundle wiped from memory";
-  btn.innerHTML = orig; btn.disabled = true;
+  restore(); btn.disabled = true;
   toast(`Done — ${imported.toLocaleString()} items imported into ${SOURCE_LABEL}; bundle wiped`, "check");
 }
 
