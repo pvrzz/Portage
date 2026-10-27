@@ -1,0 +1,42 @@
+name: Release
+# Push a tag like v2.1.1 to publish a GitHub release with both store-ready zips.
+# The release notes come from the annotated tag's message.
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch the annotated tag
+        run: git fetch --force --tags origin
+      - name: Check manifest versions match the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for browser in chrome firefox; do
+            found=$(node -p "require('./$browser/manifest.json').version")
+            if [ "$found" != "$version" ]; then
+              echo "::error::$browser/manifest.json is $found, but the tag is $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+      - name: Build zips (manifest.json at the root)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          git archive --format=zip -9 -o "portage-chrome-$version.zip" "$GITHUB_REF_NAME:chrome"
+          git archive --format=zip -9 -o "portage-firefox-$version.zip" "$GITHUB_REF_NAME:firefox"
+          unzip -l "portage-chrome-$version.zip"
+          unzip -l "portage-firefox-$version.zip"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "portage-chrome-$version.zip" "portage-firefox-$version.zip" \
+            --title "Portage $version" --notes-from-tag --latest
